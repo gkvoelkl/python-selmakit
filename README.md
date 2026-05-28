@@ -1,0 +1,544 @@
+# selmakit
+
+![selmakit](images/selmakit.png)
+
+**Question: Is it possible to rebuild OpenClaw with Pydantic-AI?**
+
+[OpenClaw](https://openclaw.ai) is a commercial multi-channel agent platform — identity files, long-term memory, skill routing, scheduled proactive turns, and multiple messaging channels unified behind a single agent loop. This project is an attempt to answer: *can you build the same architecture yourself, in Python, with open-source tools?*
+
+The answer is **yes**. `selmakit` is the result.
+
+---
+
+## What it is
+
+`selmakit` is a minimal production-ready agent framework built on top of [pydantic-ai](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+
+```
+pydantic-ai  →  LLM loop
+selmakit     →  channels, sessions, commands, memory, skills, scheduling
+```
+
+It runs a local Ollama model (or any OpenAI-compatible endpoint), serves a web chat UI via SSE, connects to Telegram, persists sessions, and routes skills — all in a single `gateway.py`.
+
+---
+
+## Features at a Glance
+
+| Feature | Implementation |
+|---|---|
+| Multi-channel (WebChat + Telegram) | `WebChatChannel`, `TelegramChannel` |
+| Session persistence + compaction | `JsonlStore` — JSONL per session, auto-compact at 50 messages |
+| Long-term memory | `SqliteMemory` — FTS5 + optional vector search + temporal decay (now an `AbstractCapability`) |
+| Slash commands | `@agent.command("/reset")` decorator |
+| Scheduled proactive turns | `@agent.schedule(every="30m")` decorator |
+| Workspace identity files | `SOUL.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md` |
+| Skills | `SKILL.md` files — discovered, XML-injected into system prompt |
+| Filesystem tools | `FilesystemCapability(cwd=".")` — read/write/edit/ls/grep/find |
+| Web search & fetch | `WebSearch(local="duckduckgo")`, `WebFetch(local=True)` — native on supporting providers, local fallback otherwise |
+| Dynamic prompt sections | `WorkspacePromptCapability`, `SkillsPromptCapability`, `RuntimeInfoCapability`, `BootstrapCapability` |
+| Per-session thinking | `SessionThinkingCapability` — `/think high` writes to session meta, capability picks it up |
+| OpenTelemetry tracing | Phoenix via `pydantic_ai.Agent.instrument_all()` (currently disabled while arize-phoenix catches up to pydantic-ai 2.0) |
+| Streamlit dashboard | `dashboard.py` — SSE chat + heartbeat alerts |
+| Config | `selmakit.json` with 120s cache |
+
+---
+
+## Architecture
+
+```
+gateway.py
+  │
+  ├── Agent (selmakit.Agent wraps pydantic_ai.Agent)
+  │     ├── capabilities (everything LLM-facing):
+  │     │     ├── FilesystemCapability      — read/write/edit/ls/grep/find
+  │     │     ├── WebSearch / WebFetch      — native or local fallback
+  │     │     ├── BootstrapCapability       — first-run hint while BOOTSTRAP.md exists
+  │     │     ├── WorkspacePromptCapability — injects SOUL/IDENTITY/USER/… MD files
+  │     │     ├── SkillsPromptCapability    — emits the <available_skills> block
+  │     │     ├── RuntimeInfoCapability     — host/os/model/date line
+  │     │     ├── SessionThinkingCapability — per-session reasoning_effort override
+  │     │     └── SqliteMemory              — memory_search / memory_write
+  │     ├── session_store: JsonlStore       — .selmakit/sessions/
+  │     └── heartbeat: ScheduleRunner       — asyncio background task
+  │
+  ├── asyncio.Queue[QueueItem]  ← both channels write here
+  │
+  ├── worker()  ← reads queue, calls agent.run_stream_events()
+  │
+  ├── WebChatChannel  (FastAPI + SSE)
+  └── TelegramChannel (python-telegram-bot)
+```
+
+### State directory
+
+All runtime state lives under `.selmakit/` (configurable):
+
+```
+.selmakit/
+  selmakit.json         — config
+  sessions/             — one .json + .meta.json per session_key
+  workspace/
+    SOUL.md             — agent personality
+    IDENTITY.md         — agent identity
+    USER.md             — user context
+    HEARTBEAT.md        — heartbeat instructions
+    BOOTSTRAP.md        — first-run onboarding script (cleared after setup)
+    memory/             — daily memory files (YYYY-MM-DD.md)
+    skills/             — SKILL.md skill definitions
+  memory.db             — SQLite FTS5 index
+```
+
+### Message flow
+
+1. User sends a message via WebChat or Telegram
+2. Channel creates a `QueueItem(session_key, prompt, reply)` and enqueues it
+3. `worker()` dequeues and calls `agent.run_stream_events()`
+4. Slash commands (`/reset`, `/status`, ...) are intercepted before the LLM
+5. Tool call events (`FunctionToolCallEvent`) are forwarded as SSE `tool` events
+6. Text delta events stream as SSE `chunk` events
+7. Session is saved after each turn
+
+---
+
+## Quick Start
+
+**Prerequisites:** [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com) running locally, a Telegram bot token (optional).
+
+```bash
+git clone https://github.com/gkvoelkl/python-selmakit
+cd python-selmakit
+
+uv sync   # prerelease=allow is set in pyproject.toml
+
+# Initialize directory structure, config, and workspace files
+uv run python setup.py
+
+cp .env.example .env
+# Edit .env: set TELEGRAM_TOKEN (only needed for Telegram channel)
+
+# Edit .selmakit/selmakit.json to set your model
+# Edit .selmakit/workspace/IDENTITY.md and USER.md
+
+# Start Phoenix tracing + gateway + Streamlit dashboard
+./start.sh        # Linux / macOS
+start.bat         # Windows
+```
+
+Or run components individually:
+
+```bash
+uv run python gateway.py           # gateway only
+uv run streamlit run dashboard.py  # dashboard only
+uv run phoenix serve               # tracing UI at http://localhost:6006
+```
+
+---
+
+## Configuration
+
+`.selmakit/selmakit.json`:
+
+```json
+{
+  "model": {
+    "model": "ollama/qwen3:8b",
+    "base_url": "http://localhost:11434/v1",
+    "timeout_seconds": 120
+  },
+  "memory": {
+    "enabled": true,
+    "vector_search": false,
+    "embed_model": "nomic-embed-text",
+    "temporal_decay": true,
+    "temporal_decay_rate": 0.05
+  },
+  "session": {
+    "reset": {
+      "at_hour": 4,
+      "idle_minutes": 120
+    }
+  },
+  "webchat": {
+    "host": "0.0.0.0",
+    "port": 8000
+  },
+  "heartbeat": {
+    "enabled": true,
+    "every": "30m",
+    "active_hours": ["08:00", "22:00"],
+    "timezone": "Europe/Berlin",
+    "target": "last"
+  }
+}
+```
+
+Thinking effort is per session, not per agent. Use `/think low|medium|high|off` in a chat — the value lands in `.meta.json` and `SessionThinkingCapability` reads it from there on each run. On providers that don't support `reasoning_effort` natively, the setting is harmless (ignored).
+
+---
+
+## The Agent Class
+
+`selmakit.Agent` wraps `pydantic_ai.Agent` and adds everything needed for a production agent loop. The pydantic-ai agent is never used directly — all interaction goes through `selmakit.Agent`.
+
+### Construction
+
+Everything LLM-facing lives in `capabilities=[...]`. Selmakit-specific concerns (session persistence, slash commands, heartbeat) stay as constructor kwargs.
+
+```python
+from pydantic_ai.capabilities import WebFetch, WebSearch
+from selmakit import (
+    Agent, JsonlStore, SqliteMemory,
+    BootstrapCapability, FilesystemCapability,
+    RuntimeInfoCapability, SessionThinkingCapability,
+    SkillsPromptCapability, WorkspacePromptCapability,
+)
+
+state_dir = ".selmakit"
+workspace_dir = f"{state_dir}/workspace"
+
+session_store = JsonlStore(path=f"{state_dir}/sessions", at_hour=4, idle_minutes=120)
+
+agent = Agent(
+    model=model,
+    state_dir=state_dir,
+    session_store=session_store,
+    memory=SqliteMemory(workspace_dir=workspace_dir, vector_search=False, temporal_decay=True),
+    commands=make_commands(config),
+    heartbeat=ScheduleConfig(every="30m", active_hours=("08:00", "22:00")),
+    capabilities=[
+        FilesystemCapability(cwd="."),
+        WebSearch(local="duckduckgo"),
+        WebFetch(local=True),
+        BootstrapCapability(workspace_dir=workspace_dir),
+        WorkspacePromptCapability(workspace_dir=workspace_dir),
+        SkillsPromptCapability(workspace_dir=workspace_dir),
+        RuntimeInfoCapability(model_name="ollama/qwen3:8b"),
+        SessionThinkingCapability(session_store=session_store),
+    ],
+)
+```
+
+Or from `selmakit.json` in one call:
+
+```python
+agent = Agent.from_file(state_dir=".selmakit", capabilities=[WebSearch(local="duckduckgo")])
+```
+
+`from_file()` reads `selmakit.json`, builds the model, session store, and memory, and passes everything to the constructor.
+
+---
+
+### Capabilities
+
+`selmakit` ships a set of `pydantic_ai.capabilities.AbstractCapability` subclasses that bundle tools, instructions, and model settings. Each one is independent — drop any of them or write your own without touching the rest of the system.
+
+| Capability | Contribution | Lifecycle |
+|---|---|---|
+| `FilesystemCapability(cwd)` | `read`/`write`/`edit`/`ls`/`grep`/`find` toolset bound to `cwd` | `get_toolset()` |
+| `WebSearch(local=...)` / `WebFetch(local=...)` | Native server-side on supporting providers, DuckDuckGo / markdownify fallback otherwise | `get_native_tools()` |
+| `WorkspacePromptCapability(workspace_dir)` | Injects all `*.md` files from the workspace under `## Workspace Files` | dynamic `get_instructions()` |
+| `SkillsPromptCapability(workspace_dir)` | Emits `<available_skills>` XML + selection rules | dynamic `get_instructions()` |
+| `RuntimeInfoCapability(model_name)` | One-line `host / os / model / date` runtime info; date re-evaluated each run | dynamic `get_instructions()` |
+| `BootstrapCapability(workspace_dir)` | Adds a bootstrap-pending hint while `BOOTSTRAP.md` has non-empty content; emptying or deleting the file silences it on the next turn | dynamic `get_instructions()` |
+| `SessionThinkingCapability(session_store)` | Reads `"thinking"` meta key via `ctx.deps` (= session_key) and sets `reasoning_effort` per run | `get_model_settings()` |
+| `SqliteMemory(workspace_dir, …)` | `memory_search` / `memory_write` toolset + usage instructions | `get_toolset()` + `get_instructions()` |
+
+Writing your own:
+
+```python
+from dataclasses import dataclass
+from typing import Any
+from pydantic_ai import RunContext
+from pydantic_ai.capabilities import AbstractCapability
+
+@dataclass
+class GreetingCapability(AbstractCapability[Any]):
+    name: str
+
+    def get_instructions(self):
+        n = self.name
+        def _instructions(ctx: RunContext[Any]) -> str:
+            return f"Greet the user as {n} on the first turn."
+        return _instructions
+```
+
+Just add it to `capabilities=[...]`. pydantic-ai concatenates instructions, merges model settings, and combines toolsets in declared order. Use `agent._agent.root_capability.apply(visitor)` to walk the full capability tree.
+
+---
+
+### Slash Commands
+
+`@agent.command` registers a handler that intercepts messages starting with `/` **before** the LLM is called. Handlers receive a `CommandContext` with `ctx.args`, `ctx.session_key`, and `ctx.session` (backed by `.meta.json`).
+
+```python
+@agent.command("/hello")
+async def cmd_hello(ctx: CommandContext) -> str:
+    """Say hello."""
+    return f"Hello, {ctx.args or 'world'}!"
+```
+
+The session proxy allows reading and writing persistent per-session state:
+
+```python
+@agent.command("/theme")
+async def cmd_theme(ctx: CommandContext) -> str:
+    """Get or set UI theme."""
+    if ctx.args:
+        ctx.session.set("theme", ctx.args.strip())
+        return f"Theme set to: {ctx.args.strip()}"
+    return f"Current theme: {ctx.session.get('theme', 'default')}"
+```
+
+Built-in commands (`/reset`, `/status`, `/compact`, `/model`, `/think`, etc.) are registered via `make_commands(config)` from `selmakit.commands`.
+
+---
+
+### Scheduled Turns
+
+`@agent.schedule` registers a background `asyncio` task that fires on a fixed interval. The handler returns a prompt string; the agent runs a full turn with it. If the reply contains meaningful content (not just `HEARTBEAT_OK`), it is placed in `agent.alerts` for delivery.
+
+```python
+@agent.schedule(
+    every="30m",
+    active_hours=("08:00", "22:00"),
+    timezone="Europe/Berlin",
+    target="last",
+)
+async def check_tasks(ctx: ScheduleContext) -> str:
+    return "Check open tasks from memory and report anything urgent. Reply HEARTBEAT_OK if nothing needs attention."
+```
+
+Interval syntax: `"30m"`, `"1h"`, `"90s"`. Set `every="0m"` to disable.
+
+`agent.run_schedules()` starts all runners as concurrent `asyncio` tasks. In `gateway.py` it runs alongside channels in `asyncio.gather()`.
+
+---
+
+### Streaming
+
+`run_stream` is an async context manager that yields a pydantic-ai stream result. Slash commands are transparently returned as a single-chunk result so the caller code is uniform:
+
+```python
+async with agent.run_stream(prompt, session_key="user:42") as result:
+    async for chunk in result.stream_text(delta=True):
+        print(chunk, end="", flush=True)
+```
+
+`run_stream_events` yields raw pydantic-ai events, enabling tool-call visibility in the UI:
+
+```python
+from pydantic_ai.messages import FunctionToolCallEvent, PartDeltaEvent, TextPartDelta
+
+async with agent.run_stream_events(prompt, session_key="user:42") as (is_cmd, value):
+    if is_cmd:
+        print(value)   # slash command result — plain string
+    else:
+        async for event in value:
+            if isinstance(event, FunctionToolCallEvent):
+                print(f"[tool] {event.part.tool_name}")
+            elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                print(event.delta.content_delta, end="", flush=True)
+```
+
+Both methods handle the full pre-run pipeline internally:
+- Slash command routing (no LLM call)
+- `/skill <name>` → converted to `"Execute skill <name>."` prompt
+- Stale session detection and reset
+- Auto-compaction when session exceeds 50 messages
+- `deps=session_key` is passed through so capabilities (e.g. `SessionThinkingCapability`) can read per-session state
+
+Bootstrap-prefix injection moved out of the wrapper: `BootstrapCapability` now emits the hint as an instruction while `BOOTSTRAP.md` exists.
+
+---
+
+### Session Introspection
+
+```python
+agent.message_count("user:42")           # number of messages in session
+agent.messages_until_compaction("user:42")  # messages remaining before auto-compact
+agent.get_tools()                         # {name: description}
+agent.get_commands()                      # {name: first docstring line}
+agent.get_schedules()                     # [{every, next_run_at}, ...]
+```
+
+---
+
+### Manual Compaction
+
+```python
+# Flush key facts to memory/YYYY-MM-DD.md, then summarize and replace history
+await agent.memory_flush("user:42")
+before, after = await agent.compact_session("user:42")
+# e.g. 52 → 4 messages
+```
+
+`/compact` calls both in sequence. Auto-compaction runs automatically inside `_prepare_run` when the session exceeds 50 messages.
+
+---
+
+## Slash Commands
+
+| Command | Description |
+|---|---|
+| `/help` | List all commands |
+| `/status` | Model, thinking level, session, compaction countdown, next heartbeat |
+| `/reset` | Clear session history |
+| `/compact` | Flush facts to memory and summarize session |
+| `/model [name]` | Show or set the model |
+| `/models` | List models available at the configured endpoint |
+| `/think [off\|low\|medium\|high]` | Show or set thinking level |
+| `/tools` | List registered tools |
+| `/skills` | List available skills |
+| `/skill <name> [args]` | Execute a skill |
+| `/config` | Show current configuration |
+| `/commands` | List all commands |
+
+---
+
+## Skills
+
+Skills are `SKILL.md` files placed under `.selmakit/workspace/skills/<skill-name>/`.
+
+At each turn the agent receives an XML index of all available skills in the system prompt and selects the most relevant one to read and follow. Skills are lazy-loaded — the LLM only reads a skill file when it decides to execute it.
+
+Example skill frontmatter:
+
+```markdown
+---
+name: my-skill
+description: Does something specific
+version: 1
+---
+
+# My Skill
+
+Execute immediately when invoked. Do not ask for confirmation.
+
+## Steps
+1. ...
+2. ...
+```
+
+---
+
+## Memory
+
+`SqliteMemory` is an `AbstractCapability` that contributes two tools and a usage hint:
+
+- **`memory_search(query)`** — FTS5 full-text search with optional vector similarity and temporal decay scoring
+- **`memory_write(content)`** — appends to today's `memory/YYYY-MM-DD.md` and re-indexes
+
+Score formula (with temporal decay):
+```
+score = 0.7 × relevance + 0.3 × e^(−λ × age_days)
+```
+
+At auto-compaction (> 50 messages), the agent runs a silent `memory_flush()` turn to save important session facts before the history is summarized.
+
+---
+
+## Channels
+
+### WebChatChannel
+
+FastAPI app with SSE streaming.
+
+| Endpoint | Description |
+|---|---|
+| `POST /webchat/stream` | Send a message, receive SSE stream |
+| `GET /webchat/heartbeat/poll` | Poll for pending proactive alerts |
+
+SSE event types: `tool`, `chunk`, `error`, `done`.
+
+### TelegramChannel
+
+Wraps `python-telegram-bot` (v20+). Normalizes incoming messages into the shared queue. Group and supergroup chats get isolated sessions (`group:<id>`).
+
+---
+
+## Heartbeat (Proactive Turns)
+
+The heartbeat scheduler runs a background `asyncio` task on a configurable interval. It calls the agent with `"heartbeat"` as the prompt. If the agent replies with something meaningful (not just `HEARTBEAT_OK`), the reply is queued as an alert and delivered via `GET /webchat/heartbeat/poll` or the next Telegram message.
+
+The `active_hours` window prevents alerts outside working hours.
+
+---
+
+## Session Compaction
+
+When a session exceeds 50 messages:
+
+1. `memory_flush()` runs a silent agent turn to save key facts to `memory/YYYY-MM-DD.md`
+2. `compact_session()` asks the agent to summarize the conversation history
+3. The summary replaces the full history
+
+This keeps context windows manageable without losing important information.
+
+---
+
+## Tracing
+
+Phoenix (Arize) is used for OpenTelemetry tracing. Start the UI:
+
+```bash
+uv run phoenix serve   # http://localhost:6006
+```
+
+`selmakit/tracing.py` calls `pydantic_ai.Agent.instrument_all(InstrumentationSettings(include_content=True))` which instruments all pydantic-ai spans — not just the HTTP layer.
+
+**Note:** `arize-phoenix` is currently incompatible with `pydantic-ai 2.x` (the Phoenix server's `__init__` imports a renamed MCP symbol). `selmakit/tracing.py` catches the `ImportError` and continues without tracing — the gateway runs unaffected. Once Phoenix ships a v2-compatible release, tracing comes back automatically with no code change.
+
+---
+
+## Project Structure
+
+```
+selmakit/
+  agent.py          — selmakit.Agent (wraps pydantic_ai.Agent)
+  capabilities.py   — Filesystem/Workspace/Skills/Runtime/Bootstrap/SessionThinking capabilities
+  commands.py       — slash command handlers + CommandContext
+  config.py         — SelmaKitConfig, load_config() with 120s cache
+  memory.py         — MemoryIndex + SqliteMemory capability (FTS5 + vector search)
+  message.py        — QueueItem, ReplyHandle
+  schedule.py       — ScheduleRunner, ScheduleConfig
+  session.py        — JsonlStore
+  skills.py         — skill discovery + XML builder
+  tools.py          — make_filesystem_tools() (consumed by FilesystemCapability)
+  tracing.py        — Phoenix OTel setup (degrades gracefully if Phoenix incompatible)
+  workspace.py      — workspace file loading + bootstrap detection
+  channels/
+    webchat.py      — WebChatChannel (FastAPI + SSE)
+    telegram.py     — TelegramChannel
+
+gateway.py          — wires everything together
+dashboard.py        — Streamlit chat UI
+setup.py            — initializes .selmakit/ structure, config, and workspace files
+start.sh            — starts Phoenix + gateway + dashboard (Linux / macOS)
+start.bat           — starts Phoenix + gateway + dashboard (Windows)
+```
+
+---
+
+## Dependencies
+
+| Package | Purpose |
+|---|---|
+| `pydantic-ai[duckduckgo,web-fetch]>=2.0.0b3` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
+| `python-telegram-bot` | Telegram channel |
+| `httpx` | Async HTTP client |
+| `streamlit` | Dashboard UI |
+| `arize-phoenix` | OpenTelemetry tracing UI (currently inactive — see Tracing section) |
+| `python-dotenv` | `.env` loading |
+| `rich` | Colored terminal output in `setup.py` |
+
+`[tool.uv] prerelease = "allow"` is set in `pyproject.toml`, so plain `uv sync` works.
+
+---
+
+## Conclusion
+
+OpenClaw's core architecture — workspace identity, persistent memory, skill routing, scheduled proactive turns, multi-channel delivery — is entirely reproducible with pydantic-ai as the LLM engine. The result is ~800 lines of framework code and a `gateway.py` that fits on one screen.
+
+What commercial platforms add on top: managed hosting, mobile apps, team collaboration, and billing. The agent logic itself is not magic.
