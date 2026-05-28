@@ -4,7 +4,7 @@
 
 **Question: Is it possible to rebuild OpenClaw with Pydantic-AI?**
 
-[OpenClaw](https://openclaw.ai) is a commercial multi-channel agent platform — identity files, long-term memory, skill routing, scheduled proactive turns, and multiple messaging channels unified behind a single agent loop. This project is an attempt to answer: *can you build the same architecture yourself, in Python, with open-source tools?*
+[OpenClaw](https://openclaw.ai) is a open multi-channel agent platform — identity files, long-term memory, skill routing, scheduled proactive turns, and multiple messaging channels unified behind a single agent loop. This project is an attempt to answer: *can you build the same architecture yourself, in Python, with open-source tools?*
 
 The answer is **yes**. `selmakit` is the result.
 
@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal production-ready agent framework built on top of [pydantic-ai](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.0b](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
