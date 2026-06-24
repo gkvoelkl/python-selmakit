@@ -10,7 +10,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.39.1",
     "opentelemetry-sdk>=1.39.1",
     "pydantic>=2.12.5",
-    "pydantic-ai[duckduckgo,web-fetch]>=2.0.0b3",
+    "pydantic-ai[duckduckgo,web-fetch]>=2.0.0",
     "python-dotenv>=1.0",
     "rich>=13.0",
     "python-telegram-bot>=22.6",
@@ -19,9 +19,6 @@ dependencies = [
     "tzdata>=2025.1",
     "uvicorn[standard]>=0.41.0",
 ]
-
-[tool.uv]
-prerelease = "allow"
 
 [build-system]
 requires = ["hatchling"]

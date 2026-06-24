@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.0b](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.0](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -109,7 +109,7 @@ All runtime state lives under `.selmakit/` (configurable):
 git clone https://github.com/gkvoelkl/python-selmakit
 cd python-selmakit
 
-uv sync   # prerelease=allow is set in pyproject.toml
+uv sync
 
 # Initialize directory structure, config, and workspace files
 uv run python setup.py
@@ -524,7 +524,7 @@ start.bat           — starts Phoenix + gateway + dashboard (Windows)
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.0.0b3` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.0.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `python-telegram-bot` | Telegram channel |
 | `httpx` | Async HTTP client |
@@ -532,8 +532,6 @@ start.bat           — starts Phoenix + gateway + dashboard (Windows)
 | `arize-phoenix` | OpenTelemetry tracing UI (currently inactive — see Tracing section) |
 | `python-dotenv` | `.env` loading |
 | `rich` | Colored terminal output in `setup.py` |
-
-`[tool.uv] prerelease = "allow"` is set in `pyproject.toml`, so plain `uv sync` works.
 
 ---
 
