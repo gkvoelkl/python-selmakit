@@ -14,13 +14,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
-from typing import Any, Dict, Generator
+from typing import Any, Dict, Generator, List
 
 import httpx
 import streamlit as st
+import streamlit.components.v1 as components
 
 from selmakit.dashboard.config import DashboardConfig
+
+# Matches local .html references in a reply: bare paths, file:// URLs or
+# markdown links. Captures the path part so it can be read from disk.
+_HTML_REF_RE = re.compile(r"(?:file://)?(/?[\w./\-]+\.html)\b", re.IGNORECASE)
 
 
 def parse_sse_events(response: httpx.Response) -> Generator[dict, None, None]:
@@ -49,6 +55,32 @@ def write_raw_file(filepath: str, content: str) -> None:
     """Writes the provided raw string content to a file."""
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+def find_html_files(text: str) -> List[str]:
+    """Returns paths of existing local ``.html`` files referenced in ``text``.
+
+    The agent typically reports a generated file as a path or ``file://`` URL
+    under the workspace; we resolve those that actually exist on disk so the
+    dashboard (running on the same host as the gateway) can embed them.
+    """
+    found: List[str] = []
+    for match in _HTML_REF_RE.finditer(text):
+        path = match.group(1)
+        if os.path.isfile(path) and path not in found:
+            found.append(path)
+    return found
+
+
+def render_html_files(text: str) -> None:
+    """Embeds any local ``.html`` files referenced in ``text`` inline."""
+    for path in find_html_files(text):
+        try:
+            html = read_raw_file(path)
+        except OSError:
+            continue
+        st.caption(f"📄 {path}")
+        components.html(html, height=600, scrolling=True)
 
 
 def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
@@ -179,6 +211,8 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
         else:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
+                if message["role"] == "assistant":
+                    render_html_files(message["content"])
 
     if prompt := st.chat_input(cfg.input_placeholder):
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -213,6 +247,7 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                                     tool_status.empty()
                                     reply_box.markdown(full_reply)
 
+                render_html_files(full_reply)
                 st.session_state.messages.append({"role": "assistant", "content": full_reply})
             except httpx.ConnectError:
                 st.error("❌ Gateway unreachable. Is `gateway.py` running?")
