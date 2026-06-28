@@ -271,6 +271,8 @@ Handled by `WebChatChannel`. The SSE event schema is a stable contract:
 | `error` | `{"message": "…"}` | Run failed |
 | `done` | `{}` | Stream complete |
 
+The client-side httpx read timeout for this stream is `DashboardConfig.stream_timeout` (default `120.0` s). A turn that produces no SSE event for longer than this — e.g. a long-running QGIS/STAC job — raises a `ReadTimeout` in the dashboard only (the CLI and the gateway itself are unaffected). Raise `stream_timeout` or set it to `None` to disable the timeout for such workloads.
+
 ### Config via filesystem
 
 The dashboard reads and writes `.selmakit/selmakit.json` directly. No HTTP endpoint. Changes are picked up by the gateway after the 120-second `load_config()` cache expires.

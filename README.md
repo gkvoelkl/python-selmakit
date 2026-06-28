@@ -167,7 +167,7 @@ run(
 )
 ```
 
-Start it with `uv run streamlit run dashboard.py`. `DashboardConfig` also exposes `gateway_base_url` (the SSE stream + heartbeat-poll URLs are derived from it), `user_name`, `page_icon`, and `show_settings`.
+Start it with `uv run streamlit run dashboard.py`. `DashboardConfig` also exposes `gateway_base_url` (the SSE stream + heartbeat-poll URLs are derived from it), `user_name`, `page_icon`, `show_settings`, and `stream_timeout` (httpx read timeout for the SSE stream, default `120.0` s; raise it or set `None` to disable for long-running turns that stay silent for a while, e.g. QGIS/STAC jobs).
 
 ### Customizing capabilities
 

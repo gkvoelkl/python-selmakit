@@ -19,6 +19,7 @@ class DashboardConfig:
     user_name: str = "Admin"
     show_settings: bool = True                         # show the selmakit.json editor in the sidebar
     config_file: str = ".selmakit/selmakit.json"       # file edited by the settings dialog
+    stream_timeout: float | None = 120.0               # httpx read timeout (s) for the SSE stream; None disables it for long-running QGIS/STAC turns
 
     @property
     def stream_url(self) -> str:

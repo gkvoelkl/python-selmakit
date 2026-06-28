@@ -197,7 +197,7 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                 full_reply = ""
 
                 with httpx.Client() as client:
-                    with client.stream("POST", cfg.stream_url, json=payload, timeout=120.0) as response:
+                    with client.stream("POST", cfg.stream_url, json=payload, timeout=cfg.stream_timeout) as response:
                         for event in parse_sse_events(response):
                             match event.get("type"):
                                 case "tool":
