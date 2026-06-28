@@ -19,7 +19,7 @@ pydantic-ai  →  LLM loop
 selmakit     →  channels, sessions, commands, memory, skills, scheduling
 ```
 
-It runs a local Ollama model (or any OpenAI-compatible endpoint), serves a web chat UI via SSE, connects to Telegram, persists sessions, and routes skills — all in a single `gateway.py`.
+It runs a local Ollama model (or any OpenAI-compatible endpoint), serves a web chat UI via SSE, connects to Telegram, persists sessions, and routes skills — all wired up by a reusable `Gateway`, so your own agent is just a few lines.
 
 ---
 
@@ -39,7 +39,8 @@ It runs a local Ollama model (or any OpenAI-compatible endpoint), serves a web c
 | Dynamic prompt sections | `WorkspacePromptCapability`, `SkillsPromptCapability`, `RuntimeInfoCapability`, `BootstrapCapability` |
 | Per-session thinking | `SessionThinkingCapability` — `/think high` writes to session meta, capability picks it up |
 | OpenTelemetry tracing | Phoenix via `pydantic_ai.Agent.instrument_all()` (currently disabled while arize-phoenix catches up to pydantic-ai 2.0) |
-| Streamlit dashboard | `dashboard.py` — SSE chat + heartbeat alerts |
+| Streamlit dashboard | `selmakit.dashboard.run(title=, image=, input_placeholder=)` — brandable SSE chat + heartbeat alerts |
+| Reusable runtime | `Gateway.from_config(extra_capabilities=[...]).run()` — backend in one line |
 | Config | `selmakit.json` with 120s cache |
 
 ---
@@ -135,6 +136,53 @@ uv run phoenix serve               # tracing UI at http://localhost:6006
 
 ---
 
+## Build Your Own Agent in Two Files
+
+You don't need to fork the repo to build your own agent. `selmakit` ships the whole runtime — the `Gateway` (backend) and the Streamlit `dashboard` (frontend) are library components. A custom agent is just two thin files plus a `.selmakit/selmakit.json`.
+
+**`gateway.py`** — backend. Build from config and run, adding your own capabilities:
+
+```python
+from dotenv import load_dotenv
+load_dotenv()
+
+from selmakit import Gateway
+from my_agent.capabilities import WeatherCapability
+
+# Default capabilities + your own
+Gateway.from_config(extra_capabilities=[WeatherCapability(api_key="...")]).run()
+```
+
+`Gateway.from_config()` reads `.selmakit/selmakit.json`, builds the model, session store, memory and cron store, wires the agent to its channels, worker, schedules and cron, and runs them all under one `asyncio.gather`. With no arguments it uses `default_capabilities()` — the standard set. Start it with `uv run gateway.py`.
+
+**`dashboard.py`** — frontend. Brand it with your own title, image and prompt:
+
+```python
+from selmakit.dashboard import run
+
+run(
+    title="🌦️ Weather Agent",
+    image="images/weather.png",
+    input_placeholder="Ask me about the weather…",
+)
+```
+
+Start it with `uv run streamlit run dashboard.py`. `DashboardConfig` also exposes `gateway_base_url` (the SSE stream + heartbeat-poll URLs are derived from it), `user_name`, `page_icon`, and `show_settings`.
+
+### Customizing capabilities
+
+| You want to… | Pass to `Gateway.from_config(...)` |
+|---|---|
+| Add a self-contained capability | `extra_capabilities=[MyCapability(...)]` |
+| Add one that needs an internal object (session store, cron store, workspace dir, model name) | `capabilities=lambda ctx: [*default_capabilities(ctx), MyCapability(store=ctx.session_store)]` |
+| Replace the default set entirely | `capabilities=[...]` (a plain list) |
+
+The `ctx` passed to a `capabilities` callable is a `GatewayContext` exposing `config`, `model`, `state_dir`, `workspace_dir`, `model_name`, `session_store`, `memory`, and `cron_store`. See [Writing your own capability](#capabilities).
+
+The root `gateway.py` and `dashboard.py` in this repo are exactly such reference files — Selma herself is built with them.
+
+---
+
 ## Configuration
 
 `.selmakit/selmakit.json`:
@@ -159,9 +207,16 @@ uv run phoenix serve               # tracing UI at http://localhost:6006
       "idle_minutes": 120
     }
   },
-  "webchat": {
-    "host": "0.0.0.0",
-    "port": 8000
+  "channels": {
+    "webchat": {
+      "enabled": true,
+      "host": "0.0.0.0",
+      "port": 8000,
+      "log_level": "info"
+    },
+    "telegram": {
+      "enabled": false
+    }
   },
   "heartbeat": {
     "enabled": true,
@@ -440,6 +495,8 @@ At auto-compaction (> 50 messages), the agent runs a silent `memory_flush()` tur
 
 ## Channels
 
+Channels are opt-in via the `channels` config section. WebChat starts when `channels.webchat.enabled` is true; Telegram starts only when `channels.telegram.enabled` is true **and** `TELEGRAM_TOKEN` is set in the environment (a missing token logs a warning and skips Telegram — no crash). With no channels enabled the gateway still runs schedules and cron.
+
 ### WebChatChannel
 
 FastAPI app with SSE streaming.
@@ -496,9 +553,11 @@ uv run phoenix serve   # http://localhost:6006
 ```
 selmakit/
   agent.py          — selmakit.Agent (wraps pydantic_ai.Agent)
+  gateway.py        — Gateway runtime + GatewayContext + default_capabilities()
   capabilities.py   — Filesystem/Workspace/Skills/Runtime/Bootstrap/SessionThinking capabilities
   commands.py       — slash command handlers + CommandContext
   config.py         — SelmaKitConfig, load_config() with 120s cache
+  cron.py           — agent-managed cron jobs (CronCapability/Service/Store)
   memory.py         — MemoryIndex + SqliteMemory capability (FTS5 + vector search)
   message.py        — QueueItem, ReplyHandle
   schedule.py       — ScheduleRunner, ScheduleConfig
@@ -510,9 +569,12 @@ selmakit/
   channels/
     webchat.py      — WebChatChannel (FastAPI + SSE)
     telegram.py     — TelegramChannel
+  dashboard/
+    app.py          — reusable Streamlit app: run(title=, image=, input_placeholder=, …)
+    config.py       — DashboardConfig
 
-gateway.py          — wires everything together
-dashboard.py        — Streamlit chat UI
+gateway.py          — reference entry point: Gateway.from_config().run()
+dashboard.py        — reference entry point: selmakit.dashboard.run(...)
 setup.py            — initializes .selmakit/ structure, config, and workspace files
 start.sh            — starts Phoenix + gateway + dashboard (Linux / macOS)
 start.bat           — starts Phoenix + gateway + dashboard (Windows)

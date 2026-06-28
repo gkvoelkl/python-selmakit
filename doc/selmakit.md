@@ -55,11 +55,22 @@ Everything else delegates to pydantic-ai or to capabilities.
 
 ### 3. One queue, one worker
 
-Both channels (WebChat, Telegram) write into a shared `asyncio.Queue[QueueItem]`. A single `worker()` coroutine dequeues and calls `agent.run_stream_events()`. This serialises agent turns per process — no concurrency issues with the SQLite memory index or session files.
+Both channels (WebChat, Telegram) write into a shared `asyncio.Queue[QueueItem]` owned by the `Gateway`. A single `Gateway._worker()` coroutine dequeues and calls `agent.run_stream_events()`. This serialises agent turns per process — no concurrency issues with the SQLite memory index or session files.
 
 ### 4. Disk-first state
 
 All runtime state lives under `.selmakit/`. Sessions, memory, workspace files, config. The Streamlit dashboard reads/writes the same files directly — no internal HTTP for config changes. The trade-off is acceptable because gateway and dashboard always run on the same machine.
+
+### 5. Library-first runtime
+
+The gateway and dashboard are not just scripts — they are importable library components. `selmakit.Gateway` wires an agent to its channels, worker, schedules and cron; `selmakit.dashboard.run()` renders the chat UI. A custom agent is two thin reference files (`gateway.py`, `dashboard.py`) that configure these components rather than reimplementing them:
+
+```python
+Gateway.from_config(extra_capabilities=[MyCapability(...)]).run()   # backend
+run(title="…", image="…", input_placeholder="…")                    # frontend
+```
+
+Capabilities that need an internal object (session store, cron store, …) receive a `GatewayContext` via a `capabilities=lambda ctx: [...]` factory; `default_capabilities(ctx)` returns the standard set.
 
 ---
 
@@ -67,14 +78,14 @@ All runtime state lives under `.selmakit/`. Sessions, memory, workspace files, c
 
 ```
                        ┌──────────────────────────────────────────┐
-                       │              gateway.py                  │
+                       │       Gateway  (selmakit/gateway.py)     │
                        │                                          │
-   WebChat ─────┐      │   asyncio.Queue[QueueItem] ──► worker()──┼──► selmakit.Agent
+   WebChat ─────┐      │   asyncio.Queue[QueueItem] ─► _worker()──┼──► selmakit.Agent
                 ├──────►                                          │         │
    Telegram ────┘      │                                          │         ▼
                        │                                          │   pydantic_ai.Agent
-                       │   agent.run_schedules() ── heartbeat ────┤         │
-                       │                                          │   ┌─────┴──────┐
+                       │   run_schedules()  ── heartbeat ──┐      │         │
+                       │   cron_service.run() ── cron ─────┘      │   ┌─────┴──────┐
                        └──────────────────────────────────────────┘   │ capabilities│
                                                                       │ + toolsets  │
                                                                       └─────┬───────┘
@@ -82,12 +93,17 @@ All runtime state lives under `.selmakit/`. Sessions, memory, workspace files, c
                                                                           LLM
 ```
 
+`Gateway.serve()` runs the enabled channels, `_worker()`, `agent.run_schedules()` (heartbeat) and `cron_service.run()` together in one `asyncio.gather()`. Channels are opt-in: WebChat starts when `channels.webchat.enabled`; Telegram only when `channels.telegram.enabled` **and** `TELEGRAM_TOKEN` is set.
+
 ### Layers, top-down
 
-1. **Channels** (`selmakit.channels.WebChatChannel`, `TelegramChannel`)
-   Translate external protocols (SSE, Telegram updates) into `QueueItem(session_key, prompt, reply)` objects.
+0. **Gateway** (`selmakit.gateway.Gateway`)
+   The composition root. `Gateway.from_config()` reads config and builds the model, session store, memory and cron store; the constructor resolves capabilities (defaults + `extra_capabilities`, or a `capabilities` list/factory), builds the agent, the enabled channels, the queue and the cron service. `run()`/`serve()` drives everything. The top-level `gateway.py` is just `Gateway.from_config().run()`.
 
-2. **Worker** (in `gateway.py`)
+1. **Channels** (`selmakit.channels.WebChatChannel`, `TelegramChannel`)
+   Translate external protocols (SSE, Telegram updates) into `QueueItem(session_key, prompt, reply)` objects. Each is opt-in via the `channels` config section.
+
+2. **Worker** (`Gateway._worker()`)
    Single async loop: `item = await queue.get()` → `agent.run_stream_events(item.prompt, session_key=item.session_key)` → stream events back via `item.reply`.
 
 3. **selmakit.Agent** (`selmakit.agent.Agent`)
@@ -191,7 +207,7 @@ Runs entirely outside the LLM loop. `ScheduleRunner` is an `asyncio` task that t
 
 1. **Channel receives a message** — `WebChatChannel.stream` (FastAPI handler) or `TelegramChannel._on_message` (PTB handler).
 2. **`QueueItem` enqueued** — `await queue.put(QueueItem(session_key, prompt, reply))`. The `reply` handle abstracts how to stream output back to the originating channel.
-3. **Worker dequeues** — `worker()` calls `async with agent.run_stream_events(prompt, session_key=…) as (is_cmd, value): …`.
+3. **Worker dequeues** — `Gateway._worker()` calls `async with agent.run_stream_events(prompt, session_key=…) as (is_cmd, value): …`.
 4. **Pre-run pipeline** (in `selmakit.Agent._prepare_run`):
    - If prompt starts with `/skill <name>`: rewrite to `"Execute skill <name>."`
    - Else if prompt starts with `/`: dispatch to slash-command handler → return `(True, text)` and skip LLM call.
@@ -238,7 +254,7 @@ Roughly 150 lines of selmakit code were deleted; in exchange, capabilities make 
 
 ## Dashboard Communication
 
-The Streamlit dashboard (`dashboard.py`) communicates with the gateway in three ways:
+The Streamlit dashboard (`selmakit/dashboard/`, started via a thin `dashboard.py` that calls `selmakit.dashboard.run(...)`) communicates with the gateway in three ways. The stream and poll URLs are derived from `DashboardConfig.gateway_base_url`:
 
 ### Chat via HTTP/SSE
 
@@ -277,6 +293,8 @@ The dashboard polls this endpoint to surface proactive turns from the heartbeat 
   sessions/
     <session_key>.json   — message history (JSONL via TypeAdapter)
     <session_key>.meta.json — thinking level, last_interaction_at, model_override
+  cron/
+    jobs.json            — agent-managed cron jobs (CronStore)
   workspace/
     SOUL.md              — agent personality (free-form)
     IDENTITY.md          — agent identity (free-form)
@@ -302,9 +320,11 @@ The dashboard polls this endpoint to surface proactive turns from the heartbeat 
 selmakit/
   __init__.py           — public exports
   agent.py              — selmakit.Agent (thin wrapper around pydantic_ai.Agent)
+  gateway.py            — Gateway composition root + GatewayContext + default_capabilities()
   capabilities.py       — Filesystem/Workspace/Skills/Runtime/Bootstrap/SessionThinking capabilities
   commands.py           — slash-command handlers + CommandContext + SessionProxy
   config.py             — SelmaKitConfig (Pydantic) + load_config() with 120s cache
+  cron.py               — agent-managed cron jobs (CronCapability/CronService/CronStore)
   memory.py             — MemoryIndex (FTS5 + vector) + SqliteMemory capability
   message.py            — QueueItem, ReplyHandle
   schedule.py           — ScheduleRunner, ScheduleConfig, interval parser
@@ -317,14 +337,18 @@ selmakit/
     __init__.py
     webchat.py          — WebChatChannel (FastAPI + SSE + heartbeat poll)
     telegram.py         — TelegramChannel (python-telegram-bot v22+)
+  dashboard/
+    __init__.py         — exports run() + DashboardConfig
+    app.py              — reusable Streamlit app: run(title=, image=, input_placeholder=, …)
+    config.py           — DashboardConfig (branding + gateway_base_url)
 
-gateway.py              — composition root: wires everything together
-dashboard.py            — Streamlit chat UI
+gateway.py              — reference entry point: Gateway.from_config().run()
+dashboard.py            — reference entry point: selmakit.dashboard.run(...)
 setup.py                — initializes .selmakit/ structure on first run
 start.sh                — boots Phoenix + gateway + dashboard
 ```
 
-Total: ~1000 lines of framework code in `selmakit/`, plus ~150 lines in `gateway.py`.
+The framework code, including the `Gateway` runtime and the reusable dashboard, lives entirely under `selmakit/`. The top-level `gateway.py` and `dashboard.py` are thin reference entry points (a handful of lines each) — Selma is built with them.
 
 ---
 

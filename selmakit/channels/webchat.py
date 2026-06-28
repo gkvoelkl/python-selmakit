@@ -82,12 +82,14 @@ class WebChatChannel:
         host: str = "0.0.0.0",
         port: int = 8000,
         timeout_seconds: int = 120,
+        log_level: str = "info",
     ):
         self._queue = queue
         self._alerts = alerts
         self.host = host
         self.port = port
         self._timeout_seconds = timeout_seconds
+        self._log_level = log_level
         self.app: FastAPI = self._build_app()
 
     def _build_app(self) -> FastAPI:
@@ -153,6 +155,6 @@ class WebChatChannel:
 
     async def start(self) -> None:
         import uvicorn
-        config = uvicorn.Config(self.app, host=self.host, port=self.port, log_level="info")
+        config = uvicorn.Config(self.app, host=self.host, port=self.port, log_level=self._log_level)
         server = uvicorn.Server(config)
         await server.serve()

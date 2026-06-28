@@ -25,6 +25,16 @@ class WebChatConfig(BaseModel):
     enabled: bool = True
     host: str = "0.0.0.0"
     port: int = 8000
+    log_level: str = "info"
+
+
+class TelegramConfig(BaseModel):
+    enabled: bool = False  # opt-in; also requires TELEGRAM_TOKEN in the environment
+
+
+class ChannelsConfig(BaseModel):
+    webchat: WebChatConfig = WebChatConfig()
+    telegram: TelegramConfig = TelegramConfig()
 
 
 class SessionResetConfig(BaseModel):
@@ -56,7 +66,7 @@ class HeartbeatConfig(BaseModel):
 class SelmaKitConfig(BaseModel):
     model: ModelConfig = ModelConfig()
     memory: MemoryConfig = MemoryConfig()
-    webchat: WebChatConfig = WebChatConfig()
+    channels: ChannelsConfig = ChannelsConfig()
     session: SessionConfig = SessionConfig()
     heartbeat: HeartbeatConfig = HeartbeatConfig()
 

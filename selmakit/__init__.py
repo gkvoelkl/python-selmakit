@@ -11,6 +11,7 @@ from selmakit.capabilities import (
 from selmakit.channels import TelegramChannel, WebChatChannel
 from selmakit.commands import CommandContext, make_commands
 from selmakit.cron import CronCapability, CronService, CronStore
+from selmakit.gateway import Gateway, GatewayContext, default_capabilities
 from selmakit.memory import SqliteMemory
 from selmakit.message import QueueItem, ReplyHandle
 from selmakit.schedule import ScheduleContext
@@ -25,6 +26,8 @@ __all__ = [
     "CronService",
     "CronStore",
     "FilesystemCapability",
+    "Gateway",
+    "GatewayContext",
     "HeartbeatCapability",
     "JsonlStore",
     "QueueItem",
@@ -37,6 +40,7 @@ __all__ = [
     "TelegramChannel",
     "WebChatChannel",
     "WorkspacePromptCapability",
+    "default_capabilities",
     "make_commands",
     "make_filesystem_tools",
 ]
