@@ -38,7 +38,7 @@ It runs a local Ollama model (or any OpenAI-compatible endpoint), serves a web c
 | Web search & fetch | `WebSearch(local="duckduckgo")`, `WebFetch(local=True)` — native on supporting providers, local fallback otherwise |
 | Dynamic prompt sections | `WorkspacePromptCapability`, `SkillsPromptCapability`, `RuntimeInfoCapability`, `BootstrapCapability` |
 | Per-session thinking | `SessionThinkingCapability` — `/think high` writes to session meta, capability picks it up |
-| OpenTelemetry tracing | Phoenix via `pydantic_ai.Agent.instrument_all()` (currently disabled while arize-phoenix catches up to pydantic-ai 2.0) |
+| OpenTelemetry tracing | `pydantic_ai.Agent.instrument_all()` exporting OTLP/gRPC to a standalone Phoenix container (`arize-phoenix` is not a Python dependency — it pins pydantic-ai-slim<2) |
 | Streamlit dashboard | `selmakit.dashboard.run(title=, image=, input_placeholder=)` — brandable SSE chat + heartbeat alerts |
 | Reusable runtime | `Gateway.from_config(extra_capabilities=[...]).run()` — backend in one line |
 | Config | `selmakit.json` with 120s cache |
@@ -121,7 +121,7 @@ cp .env.example .env
 # Edit .selmakit/selmakit.json to set your model
 # Edit .selmakit/workspace/IDENTITY.md and USER.md
 
-# Start Phoenix tracing + gateway + Streamlit dashboard
+# Start Phoenix tracing (Docker) + gateway + Streamlit dashboard
 ./start.sh        # Linux / macOS
 start.bat         # Windows
 ```
@@ -131,7 +131,7 @@ Or run components individually:
 ```bash
 uv run python gateway.py           # gateway only
 uv run streamlit run dashboard.py  # dashboard only
-uv run phoenix serve               # tracing UI at http://localhost:6006
+docker run -d --rm -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:latest  # tracing UI at http://localhost:6006
 ```
 
 ---
@@ -536,15 +536,16 @@ This keeps context windows manageable without losing important information.
 
 ## Tracing
 
-Phoenix (Arize) is used for OpenTelemetry tracing. Start the UI:
+Phoenix (Arize) is used for OpenTelemetry tracing. Run it as a standalone container:
 
 ```bash
-uv run phoenix serve   # http://localhost:6006
+docker run -d --rm -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:latest
+# UI: http://localhost:6006   OTLP/gRPC: localhost:4317
 ```
 
-`selmakit/tracing.py` calls `pydantic_ai.Agent.instrument_all(InstrumentationSettings(include_content=True))` which instruments all pydantic-ai spans — not just the HTTP layer.
+`selmakit/tracing.py` builds an OTel `TracerProvider` with an OTLP/gRPC exporter pointed at `localhost:4317` and calls `pydantic_ai.Agent.instrument_all(InstrumentationSettings(tracer_provider=…, include_content=True))`, which instruments all pydantic-ai spans — not just the HTTP layer. If the OTel SDK is missing, tracing is skipped and the gateway runs unaffected.
 
-**Note:** `arize-phoenix` is currently incompatible with `pydantic-ai 2.x` (the Phoenix server's `__init__` imports a renamed MCP symbol). `selmakit/tracing.py` catches the `ImportError` and continues without tracing — the gateway runs unaffected. Once Phoenix ships a v2-compatible release, tracing comes back automatically with no code change.
+**Why a container?** `arize-phoenix` is **not** a Python dependency of selmakit: it pins `pydantic-ai-slim<2` (true even on the latest 17.x), so installing it in the same venv would crash on import under pydantic-ai 2.x. Running Phoenix in its own container keeps the venv clean while selmakit talks to it purely over the OTLP endpoint. Any OTLP collector on `:4317` works as a drop-in replacement.
 
 ---
 
@@ -564,7 +565,7 @@ selmakit/
   session.py        — JsonlStore
   skills.py         — skill discovery + XML builder
   tools.py          — make_filesystem_tools() (consumed by FilesystemCapability)
-  tracing.py        — Phoenix OTel setup (degrades gracefully if Phoenix incompatible)
+  tracing.py        — OTel setup: OTLP/gRPC export to Phoenix (degrades gracefully if OTel SDK missing)
   workspace.py      — workspace file loading + bootstrap detection
   channels/
     webchat.py      — WebChatChannel (FastAPI + SSE)
@@ -576,8 +577,8 @@ selmakit/
 gateway.py          — reference entry point: Gateway.from_config().run()
 dashboard.py        — reference entry point: selmakit.dashboard.run(...)
 setup.py            — initializes .selmakit/ structure, config, and workspace files
-start.sh            — starts Phoenix + gateway + dashboard (Linux / macOS)
-start.bat           — starts Phoenix + gateway + dashboard (Windows)
+start.sh            — starts Phoenix (Docker) + gateway + dashboard (Linux / macOS)
+start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 ```
 
 ---
@@ -586,12 +587,12 @@ start.bat           — starts Phoenix + gateway + dashboard (Windows)
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.0.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.1.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `python-telegram-bot` | Telegram channel |
 | `httpx` | Async HTTP client |
 | `streamlit` | Dashboard UI |
-| `arize-phoenix` | OpenTelemetry tracing UI (currently inactive — see Tracing section) |
+| `opentelemetry-sdk` + `opentelemetry-exporter-otlp-proto-grpc` | OpenTelemetry tracing → OTLP/gRPC export (Phoenix runs as a standalone container, not a Python dep — see Tracing section) |
 | `python-dotenv` | `.env` loading |
 | `rich` | Colored terminal output in `setup.py` |
 
