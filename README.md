@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.0](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.2](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -326,6 +326,17 @@ Just add it to `capabilities=[...]`. pydantic-ai concatenates instructions, merg
 
 `@agent.command` registers a handler that intercepts messages starting with `/` **before** the LLM is called. Handlers receive a `CommandContext` with `ctx.args`, `ctx.session_key`, and `ctx.session` (backed by `.meta.json`).
 
+The simplest possible command — an `async` function that returns a string. The first docstring line becomes its description in `/help` and `/commands`:
+
+```python
+@agent.command("/echo")
+async def cmd_echo(ctx: CommandContext) -> str:
+    """Echo the arguments back."""
+    return f"You said: {ctx.args}"
+```
+
+`ctx.args` holds everything after the command name (e.g. `/echo hi there` → `"hi there"`), and is an empty string when none are given:
+
 ```python
 @agent.command("/hello")
 async def cmd_hello(ctx: CommandContext) -> str:
@@ -587,7 +598,7 @@ start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.1.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.2.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `python-telegram-bot` | Telegram channel |
 | `httpx` | Async HTTP client |
