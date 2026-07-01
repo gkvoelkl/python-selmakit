@@ -111,16 +111,12 @@ class Agent:
         **kwargs,
     ) -> "Agent":
         """Create an Agent from selmakit.json — reads and distributes config internally."""
-        from pydantic_ai.models.openai import OpenAIChatModel
-        from pydantic_ai.providers.openai import OpenAIProvider
-        from selmakit.config import load_config
+        from selmakit.config import build_model, load_config
         from selmakit.memory import SqliteMemory
 
         config = load_config(state_dir, config_name)
         cfg = config.model
-        model_str = cfg.model
-        _, model_name = model_str.split("/", 1) if "/" in model_str else ("ollama", model_str)
-        model = OpenAIChatModel(model_name, provider=OpenAIProvider(base_url=cfg.effective_base_url))
+        model = build_model(cfg)
 
         memory = None
         if config.memory.enabled:

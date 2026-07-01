@@ -26,8 +26,6 @@ from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from pydantic_ai.capabilities import WebFetch, WebSearch
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.openai import OpenAIProvider
 
 from selmakit.agent import Agent
 from selmakit.capabilities import (
@@ -41,7 +39,7 @@ from selmakit.capabilities import (
 from selmakit.channels.telegram import TelegramChannel
 from selmakit.channels.webchat import WebChatChannel
 from selmakit.commands import make_commands
-from selmakit.config import SelmaKitConfig, load_config
+from selmakit.config import SelmaKitConfig, build_model, load_config
 from selmakit.cron import CronCapability, CronService, CronStore
 from selmakit.memory import SqliteMemory
 from selmakit.message import QueueItem
@@ -62,7 +60,7 @@ class GatewayContext:
     """
 
     config: SelmaKitConfig
-    model: Any                       # OpenAIChatModel
+    model: Any                       # a pydantic-ai model (see selmakit.config.build_model)
     state_dir: str
     workspace_dir: str
     model_name: str                  # full "provider/model" string, e.g. "ollama/llama3.2"
@@ -211,9 +209,7 @@ class Gateway:
         """Build a Gateway from ``selmakit.json`` — reads and distributes config."""
         config = load_config(state_dir, config_name)
         cfg = config.model
-        model_str = cfg.model
-        _, model_name = model_str.split("/", 1) if "/" in model_str else ("ollama", model_str)
-        model = OpenAIChatModel(model_name, provider=OpenAIProvider(base_url=cfg.effective_base_url))
+        model = build_model(cfg)
 
         session_store = JsonlStore(
             path=f"{state_dir}/sessions",

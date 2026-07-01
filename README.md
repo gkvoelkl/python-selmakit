@@ -19,7 +19,7 @@ pydantic-ai  →  LLM loop
 selmakit     →  channels, sessions, commands, memory, skills, scheduling
 ```
 
-It runs a local Ollama model (or any OpenAI-compatible endpoint), serves a web chat UI via SSE, connects to Telegram, persists sessions, and routes skills — all wired up by a reusable `Gateway`, so your own agent is just a few lines.
+It runs a local Ollama model by default, but the same `model` config knob also drives hosted OpenAI, Anthropic (Claude), and Google (Gemini) models — see [Model providers](#model-providers). It serves a web chat UI via SSE, connects to Telegram, persists sessions, and routes skills — all wired up by a reusable `Gateway`, so your own agent is just a few lines.
 
 ---
 
@@ -229,6 +229,19 @@ The root `gateway.py` and `dashboard.py` in this repo are exactly such reference
 ```
 
 Thinking effort is per session, not per agent. Use `/think low|medium|high|off` in a chat — the value lands in `.meta.json` and `SessionThinkingCapability` reads it from there on each run. On providers that don't support `reasoning_effort` natively, the setting is harmless (ignored).
+
+### Model providers
+
+The `model.model` string is a `"provider/model"` pair. `config.build_model()` — called by both `Gateway.from_config()` and `Agent.from_file()` — dispatches on the provider prefix, so you switch backends by editing one config value (no code change):
+
+| `model.model` | Backend | Credentials / endpoint |
+|---|---|---|
+| `ollama/llama3.2` *(default)* | Local Ollama via its OpenAI-compatible endpoint | `model.base_url` (default `http://localhost:11434/v1`); no API key |
+| `openai/gpt-5` | OpenAI | `OPENAI_API_KEY` (optional `OPENAI_BASE_URL`) |
+| `anthropic/claude-sonnet-4-6` · `anthropic/claude-opus-4-8` | Anthropic (Claude) | `ANTHROPIC_API_KEY` |
+| `google/gemini-2.5-pro` · `gemini/gemini-2.5-flash` | Google (Gemini) | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
+
+A bare model string with no `provider/` prefix defaults to `ollama`. Only the `ollama` branch reads `model.base_url` — the hosted providers pick up their endpoints and keys from the environment (put them in `.env`). Ollama stays the primary, local-first path; the hosted providers are there when you want more capability or a cloud fallback. The `anthropic` and `google-genai` SDKs ship with the full `pydantic-ai` dependency, so no extra install is needed. An unknown provider raises a `ValueError` at startup.
 
 ---
 

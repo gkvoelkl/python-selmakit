@@ -71,6 +71,53 @@ class SelmaKitConfig(BaseModel):
     heartbeat: HeartbeatConfig = HeartbeatConfig()
 
 
+def build_model(cfg: ModelConfig):
+    """Build a pydantic-ai model from the ``provider/model`` string in ``cfg.model``.
+
+    Dispatches on the provider prefix so selmakit can drive multiple backends
+    from the same config knob:
+
+      - ``ollama/…``               → OpenAI-compatible endpoint at ``effective_base_url``
+                                     (default; local, verified tool-caller)
+      - ``openai/…``               → OpenAI API (key from ``OPENAI_API_KEY``,
+                                     endpoint override via ``OPENAI_BASE_URL``)
+      - ``anthropic/…``            → Anthropic API (key from ``ANTHROPIC_API_KEY``)
+      - ``google/…`` / ``gemini/…``→ Gemini API (key from ``GEMINI_API_KEY`` /
+                                     ``GOOGLE_API_KEY``)
+
+    A bare model string with no ``provider/`` prefix defaults to ``ollama``.
+    Only the ``ollama`` branch uses ``cfg.base_url`` — the hosted providers read
+    their own credentials and endpoints from the environment.
+    """
+    provider, _, model_name = cfg.model.partition("/")
+    if not model_name:  # no slash → whole string is the model name, provider defaults to ollama
+        provider, model_name = "ollama", provider
+    provider = provider.lower()
+
+    if provider == "ollama":
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.ollama import OllamaProvider
+        return OpenAIChatModel(model_name, provider=OllamaProvider(base_url=cfg.effective_base_url))
+
+    if provider == "openai":
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+        return OpenAIChatModel(model_name, provider=OpenAIProvider())
+
+    if provider == "anthropic":
+        from pydantic_ai.models.anthropic import AnthropicModel
+        return AnthropicModel(model_name)
+
+    if provider in ("google", "gemini", "google-gla"):
+        from pydantic_ai.models.google import GoogleModel
+        return GoogleModel(model_name)
+
+    raise ValueError(
+        f"Unknown model provider {provider!r} in {cfg.model!r}. "
+        "Use one of: ollama, openai, anthropic, google/gemini."
+    )
+
+
 def load_config(state_dir: str = ".selmakit", config_name: str = "selmakit.json") -> SelmaKitConfig:
     config_path = Path(state_dir) / config_name
     cache_key = str(config_path.resolve())
