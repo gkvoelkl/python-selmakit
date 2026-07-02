@@ -242,7 +242,7 @@ Roughly 150 lines of selmakit code were deleted; in exchange, capabilities make 
 
 ### Known incompatibility: Phoenix tracing
 
-`arize-phoenix` 15.x imports `MCPServerStreamableHTTP` from `pydantic_ai.mcp`, which was renamed in 2.0. `selmakit/tracing.py` catches the `ImportError` and continues without instrumentation. The gateway runs unaffected. Once Phoenix ships a 2.x-compatible release, tracing returns automatically.
+`arize-phoenix` pins `pydantic-ai-slim<2` (still true on the latest 17.x), so installing it in the same venv would crash on import under pydantic-ai 2.x. It is therefore deliberately **not** a Python dependency of selmakit — Phoenix runs as a standalone Docker container and selmakit talks to it purely over the OTLP endpoint. `selmakit/tracing.py` sets up the OTel SDK directly and skips instrumentation with a warning if the OTel exporter is missing; the gateway runs unaffected either way.
 
 ### Breaking changes worth knowing
 
