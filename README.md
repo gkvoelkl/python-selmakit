@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.3](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.5](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -611,7 +611,7 @@ start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.3.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.5.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `python-telegram-bot` | Telegram channel |
 | `httpx` | Async HTTP client |
