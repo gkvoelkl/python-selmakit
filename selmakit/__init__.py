@@ -9,7 +9,7 @@ from selmakit.capabilities import (
     WorkspacePromptCapability,
 )
 from selmakit.channels import TelegramChannel, WebChatChannel
-from selmakit.commands import CommandContext, make_commands
+from selmakit.commands import CommandContext, RunPrompt, make_commands
 from selmakit.cron import CronCapability, CronService, CronStore
 from selmakit.gateway import Gateway, GatewayContext, default_capabilities
 from selmakit.memory import SqliteMemory
@@ -32,6 +32,7 @@ __all__ = [
     "JsonlStore",
     "QueueItem",
     "ReplyHandle",
+    "RunPrompt",
     "RuntimeInfoCapability",
     "ScheduleContext",
     "SessionThinkingCapability",

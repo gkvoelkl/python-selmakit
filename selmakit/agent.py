@@ -9,7 +9,7 @@ from typing import Any, Callable, Sequence
 
 from pydantic_ai import Agent as _PydanticAgent
 
-from selmakit.commands import CommandContext, SessionProxy
+from selmakit.commands import CommandContext, RunPrompt, SessionProxy
 from selmakit.schedule import ScheduleConfig, ScheduleContext, ScheduleRunner
 from selmakit.session import JsonlStore
 
@@ -231,7 +231,7 @@ class Agent:
             return fn
         return decorator
 
-    async def _dispatch_command(self, text: str, session_key: str) -> str | None:
+    async def _dispatch_command(self, text: str, session_key: str) -> str | RunPrompt | None:
         parts = text.strip().split(None, 1)
         cmd = parts[0].lower()
         handler = self._commands.get(cmd)
@@ -364,9 +364,11 @@ class Agent:
                 f"Execute skill {skill_name}: {args}"
             )
         elif prompt.startswith("/"):
-            cmd_text = await self._dispatch_command(prompt, session_key)
-            if cmd_text is not None:
-                return cmd_text, "", {}
+            result = await self._dispatch_command(prompt, session_key)
+            if isinstance(result, RunPrompt):
+                prompt = result.text          # rewrite-and-run like /skill
+            elif result is not None:
+                return result, "", {}         # plain text: short-circuit
 
         effective_prompt = prompt
 

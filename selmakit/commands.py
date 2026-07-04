@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -10,6 +11,15 @@ from pydantic import BaseModel, ConfigDict
 if TYPE_CHECKING:
     from selmakit.agent import Agent
     from selmakit.config import SelmaKitConfig
+
+
+@dataclass
+class RunPrompt:
+    """A command handler returns this instead of text: selmakit runs
+    `text` as a normal (streamed) user turn — the general form of the
+    /skill rewrite-and-run pattern."""
+
+    text: str
 
 
 class SessionProxy:
