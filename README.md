@@ -471,6 +471,7 @@ before, after = await agent.compact_session("user:42")
 | `/skills` | List available skills |
 | `/skill <name> [args]` | Execute a skill |
 | `/config` | Show current configuration |
+| `/systemprompt` | Show the system prompt as last sent to the model this session |
 | `/commands` | List all commands |
 
 ---

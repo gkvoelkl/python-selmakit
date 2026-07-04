@@ -154,6 +154,14 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
 
         return "\n".join(lines)
 
+    async def cmd_systemprompt(ctx: CommandContext) -> str:
+        """Show the system prompt as last sent to the model this session."""
+        agent: Agent = ctx.agent
+        prompt = agent.last_system_prompt(ctx.session_key)
+        if not prompt:
+            return "No system prompt recorded yet — send a message first."
+        return prompt
+
     # ── Tools ─────────────────────────────────────────────────
 
     async def cmd_tools(ctx: CommandContext) -> str:
@@ -219,6 +227,7 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
         "/think":    cmd_think,
         "/config":   cmd_config,
         "/status":   cmd_status,
+        "/systemprompt": cmd_systemprompt,
         "/tools":    cmd_tools,
         "/skills":   cmd_skills,
         "/commands": cmd_commands,

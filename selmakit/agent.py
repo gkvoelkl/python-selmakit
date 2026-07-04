@@ -156,6 +156,26 @@ class Agent:
     def message_count(self, session_key: str) -> int:
         return len(self._session_store.load(session_key))
 
+    def last_system_prompt(self, session_key: str = "default") -> str | None:
+        """The system prompt as last actually sent to the model for this session.
+
+        The rendered instructions are stripped from the persisted message history
+        to save space, so they are cached separately in the session metadata after
+        each turn. Returns None before the first LLM turn of the session.
+        """
+        if not self._session_store:
+            return None
+        return self._session_store.get_meta(session_key, "last_system_prompt")
+
+    @staticmethod
+    def _extract_instructions(messages: list) -> str | None:
+        """Pull the rendered instructions string from the latest request that has one."""
+        for m in reversed(messages):
+            instr = getattr(m, "instructions", None)
+            if instr:
+                return instr
+        return None
+
     # ------------------------------------------------------------------ tools
 
     def get_tools(self) -> dict[str, str | None]:
@@ -390,8 +410,12 @@ class Agent:
             yield result
 
         if self._session_store and result.is_complete:
-            self._session_store.save(session_key, result.all_messages())
+            messages = result.all_messages()
+            self._session_store.save(session_key, messages)
             self._session_store.touch(session_key)
+            instr = self._extract_instructions(messages)
+            if instr:
+                self._session_store.set_meta(session_key, "last_system_prompt", instr)
 
     @asynccontextmanager
     async def run_stream_events(self, prompt: str, *, session_key: str = "default"):
@@ -420,5 +444,9 @@ class Agent:
         yield False, _event_gen()
 
         if self._session_store and final_result is not None:
-            self._session_store.save(session_key, final_result.all_messages())
+            messages = final_result.all_messages()
+            self._session_store.save(session_key, messages)
             self._session_store.touch(session_key)
+            instr = self._extract_instructions(messages)
+            if instr:
+                self._session_store.set_meta(session_key, "last_system_prompt", instr)
