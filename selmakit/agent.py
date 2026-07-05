@@ -369,6 +369,13 @@ class Agent:
                 prompt = result.text          # rewrite-and-run like /skill
             elif result is not None:
                 return result, "", {}         # plain text: short-circuit
+            else:                             # unknown slash command
+                cmd = prompt.strip().split(None, 1)[0]
+                return (
+                    f"Unknown command `{cmd}`. Type `/help` to see available commands.",
+                    "",
+                    {},
+                )
 
         effective_prompt = prompt
 
