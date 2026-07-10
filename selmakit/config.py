@@ -13,6 +13,7 @@ class ModelConfig(BaseModel):
     model: str = "ollama/llama3.2"
     base_url: str = "http://localhost:11434/v1"
     ollama_base_url: str | None = None  # alias — overrides base_url when set
+    api_key: str | None = None  # key for hosted providers; falls back to the provider's env var
     timeout_seconds: int = 300
     thinking: str | None = None  # default thinking level for new sessions (off/low/medium/high)
 
@@ -87,7 +88,10 @@ def build_model(cfg: ModelConfig):
 
     A bare model string with no ``provider/`` prefix defaults to ``ollama``.
     Only the ``ollama`` branch uses ``cfg.base_url`` — the hosted providers read
-    their own credentials and endpoints from the environment.
+    their endpoint from the environment. For credentials they prefer
+    ``cfg.api_key`` (set via the dashboard's model selector) and otherwise fall
+    back to the provider's env var (``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` /
+    ``GEMINI_API_KEY``).
     """
     provider, _, model_name = cfg.model.partition("/")
     if not model_name:  # no slash → whole string is the model name, provider defaults to ollama
@@ -102,14 +106,21 @@ def build_model(cfg: ModelConfig):
     if provider == "openai":
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
-        return OpenAIChatModel(model_name, provider=OpenAIProvider())
+        provider_obj = OpenAIProvider(api_key=cfg.api_key) if cfg.api_key else OpenAIProvider()
+        return OpenAIChatModel(model_name, provider=provider_obj)
 
     if provider == "anthropic":
         from pydantic_ai.models.anthropic import AnthropicModel
+        if cfg.api_key:
+            from pydantic_ai.providers.anthropic import AnthropicProvider
+            return AnthropicModel(model_name, provider=AnthropicProvider(api_key=cfg.api_key))
         return AnthropicModel(model_name)
 
     if provider in ("google", "gemini", "google-gla"):
         from pydantic_ai.models.google import GoogleModel
+        if cfg.api_key:
+            from pydantic_ai.providers.google import GoogleProvider
+            return GoogleModel(model_name, provider=GoogleProvider(api_key=cfg.api_key))
         return GoogleModel(model_name)
 
     raise ValueError(

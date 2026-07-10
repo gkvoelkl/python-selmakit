@@ -133,6 +133,7 @@ class Gateway:
             state_dir=state_dir,
             session_store=session_store,
             memory=memory,
+            model_config=config.model,
             capabilities=caps,
             tools=tools,
             commands=commands if commands is not None else make_commands(config, cron_store=cron_store),

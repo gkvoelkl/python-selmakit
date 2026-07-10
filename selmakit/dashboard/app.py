@@ -28,6 +28,70 @@ from selmakit.dashboard.config import DashboardConfig
 # markdown links. Captures the path part so it can be read from disk.
 _HTML_REF_RE = re.compile(r"(?:file://)?(/?[\w./\-]+\.html)\b", re.IGNORECASE)
 
+# Curated hosted models selmakit's build_model() can dispatch on (provider/model).
+# Extend freely — the string is written verbatim into selmakit.json's model.model.
+_COMMERCIAL_MODELS: List[str] = [
+    "anthropic/claude-opus-4-8",
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-haiku-4-5",
+    "openai/gpt-4o",
+    "openai/gpt-4o-mini",
+    "google/gemini-2.5-pro",
+    "google/gemini-2.5-flash",
+]
+
+
+def list_ollama_models(base_url: str) -> List[str]:
+    """Return installed Ollama models as ``ollama/<name>`` strings.
+
+    Queries the native ``/api/tags`` endpoint derived from the OpenAI-compatible
+    ``base_url`` (…/v1). Returns an empty list if Ollama is unreachable.
+    """
+    host = base_url.rstrip("/")
+    if host.endswith("/v1"):
+        host = host[: -len("/v1")]
+    try:
+        resp = httpx.get(f"{host}/api/tags", timeout=2.0)
+        resp.raise_for_status()
+        return [f"ollama/{m['name']}" for m in resp.json().get("models", [])]
+    except Exception:
+        return []
+
+
+def send_command(stream_url: str, user_id: str, user_name: str, text: str, timeout: float = 10.0) -> None:
+    """Send a slash command through the SSE stream and drain the reply.
+
+    Used to apply a live ``/model`` switch to the running gateway session
+    without a restart. Raises on connection failure so the caller can report it.
+    """
+    payload = {"user_id": user_id, "text": text, "user_name": user_name}
+    with httpx.Client() as client:
+        with client.stream("POST", stream_url, json=payload, timeout=timeout) as response:
+            for _ in parse_sse_events(response):
+                pass
+
+
+def read_model_config(config_file: str) -> Dict[str, Any]:
+    """Read the ``model`` section of selmakit.json (empty dict on failure)."""
+    try:
+        return json.loads(read_raw_file(config_file)).get("model", {})
+    except Exception:
+        return {}
+
+
+def write_model_config(config_file: str, model: str, api_key: str | None) -> None:
+    """Patch the ``model`` section of selmakit.json, preserving every other key.
+
+    Writes ``model.model``; sets ``model.api_key`` only when a non-empty key is
+    given (an empty field leaves the existing key untouched).
+    """
+    data: Dict[str, Any] = json.loads(read_raw_file(config_file))
+    model_section = data.setdefault("model", {})
+    model_section["model"] = model
+    if api_key:
+        model_section["api_key"] = api_key
+    write_raw_file(config_file, json.dumps(data, indent=4))
+
 
 def parse_sse_events(response: httpx.Response) -> Generator[dict, None, None]:
     """Reads SSE lines, yields all events as dicts."""
@@ -180,6 +244,39 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
             settings_dialog()
         if st.session_state.config_editing:
             settings_dialog()
+
+        # -- Chat model selector: Ollama (live) + curated hosted models
+        with st.sidebar.expander("🤖 Chat model", expanded=False):
+            model_cfg = read_model_config(cfg.config_file)
+            current = model_cfg.get("model", "")
+
+            options = list_ollama_models(model_cfg.get("ollama_base_url") or model_cfg.get("base_url", "http://localhost:11434/v1"))
+            options += _COMMERCIAL_MODELS
+            if current and current not in options:  # keep whatever is configured selectable
+                options.insert(0, current)
+
+            index = options.index(current) if current in options else 0
+            selected = st.selectbox("Model", options, index=index)
+            api_key = st.text_input(
+                "API key",
+                type="password",
+                placeholder="leave blank to keep current / use env var",
+                help="Stored in selmakit.json (model.api_key). Only needed for hosted providers.",
+            )
+
+            if st.button("💾 Save model"):
+                try:
+                    # 1) Persist to selmakit.json (survives restart; key read fresh
+                    #    by the gateway when it builds the override model).
+                    write_model_config(cfg.config_file, selected, api_key or None)
+                    # 2) Apply live to this session via /model — no restart needed.
+                    try:
+                        send_command(cfg.stream_url, st.session_state.user_id, cfg.user_name, f"/model {selected}")
+                        st.success(f"Model switched live to `{selected}`.")
+                    except Exception:
+                        st.warning("Saved to config, but gateway unreachable — applies after restart.")
+                except Exception as e:
+                    st.error(f"Could not save: {e}")
 
     # -- Alert polling (runs every 5 s independently of user input)
     @st.fragment(run_every="5s")

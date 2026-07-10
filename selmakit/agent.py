@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import date
@@ -68,8 +69,13 @@ class Agent:
         session_store: JsonlStore | None = None,
         memory: Any = None,
         heartbeat: ScheduleConfig | None = None,
+        model_config: Any = None,
     ):
         self._state_dir = Path(state_dir)
+        # Base model config, used to build per-run override models (live /model
+        # switching). None → no override support; runs always use `model`.
+        self._model_config = model_config
+        self._override_models: dict[tuple, Any] = {}
         self._workspace_dir = self._state_dir / "workspace"
         self._commands: dict[str, Callable] = {k.lower(): v for k, v in (commands or {}).items()}
         self._memory = memory
@@ -140,6 +146,7 @@ class Agent:
             state_dir=state_dir,
             session_store=session_store,
             memory=memory,
+            model_config=cfg,
             **kwargs,
         )
 
@@ -343,6 +350,49 @@ class Agent:
 
     # ----------------------------------------------------------------- stream
 
+    def _current_model_config(self):
+        """The model config as currently on disk (fresh read, cache-bypassing).
+
+        Lets a live model/key change made in selmakit.json (e.g. via the
+        dashboard selector) take effect on the next turn without a restart.
+        Falls back to the base config captured at construction.
+        """
+        from selmakit.config import ModelConfig
+
+        path = self._state_dir / "selmakit.json"
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return ModelConfig(**data.get("model", {}))
+            except Exception:
+                pass
+        return self._model_config or ModelConfig()
+
+    def _resolve_run_model(self, session_key: str):
+        """Build a per-run model when the session carries a live ``model_override``.
+
+        Returns a pydantic-ai model to pass as ``run(model=…)``, or ``None`` to
+        use the agent's default model. The override (set by ``/model`` or the
+        dashboard selector) is a ``provider/model`` string; credentials and
+        base_url are read fresh from selmakit.json so a just-saved key applies
+        without a restart. Built models are cached per (model, key, base_url).
+        """
+        if not self._session_store:
+            return None
+        override = self._session_store.get_meta(session_key, "model_override")
+        base = self._model_config
+        if not override or (base is not None and override == base.model):
+            return None
+
+        cfg = self._current_model_config().model_copy(update={"model": override})
+        cache_key = (override, cfg.api_key, cfg.effective_base_url)
+        model = self._override_models.get(cache_key)
+        if model is None:
+            from selmakit.config import build_model
+            model = build_model(cfg)
+            self._override_models[cache_key] = model
+        return model
+
     async def _prepare_run(self, prompt: str, session_key: str) -> tuple[str | None, str, dict]:
         """Shared pre-processing for all run methods.
 
@@ -393,6 +443,10 @@ class Agent:
             history = self._session_store.load(session_key)
 
         kwargs: dict[str, Any] = {"message_history": history, "deps": session_key}
+
+        override_model = self._resolve_run_model(session_key)
+        if override_model is not None:
+            kwargs["model"] = override_model
 
         return None, effective_prompt, kwargs
 

@@ -97,13 +97,44 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
     # ── Model & Thinking ──────────────────────────────────────
 
     async def cmd_model(ctx: CommandContext) -> str:
-        """Show or set the active model for this session."""
+        """Show or set the active model for this session.
+
+        Validates the target before setting it: the provider prefix must be one
+        build_model() knows, and for ``ollama/…`` the model must actually be
+        installed at the configured endpoint (checked live, skipped if the
+        endpoint is unreachable so an offline check never blocks a switch).
+        """
         override = ctx.session.get("model_override")
         current = override or config.model.model
-        if ctx.args:
-            ctx.session.set("model_override", ctx.args.strip())
-            return f"Model set to: {ctx.args.strip()}"
-        return f"Current model: {current}"
+        if not ctx.args:
+            return f"Current model: {current}"
+
+        target = ctx.args.strip()
+        provider, _, model_name = target.partition("/")
+        if not model_name:  # bare name → ollama, matching build_model()
+            provider, model_name = "ollama", provider
+        provider = provider.lower()
+
+        known = {"ollama", "openai", "anthropic", "google", "gemini", "google-gla"}
+        if provider not in known:
+            return (
+                f"Unknown provider `{provider}`. "
+                "Use one of: ollama, openai, anthropic, google/gemini."
+            )
+
+        if provider == "ollama":
+            url = f"{config.model.effective_base_url.rstrip('/')}/models"
+            try:
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    installed = [m["id"] for m in json.loads(resp.read()).get("data", [])]
+            except Exception:
+                installed = None  # endpoint unreachable → don't block the switch
+            if installed is not None and model_name not in installed:
+                avail = ", ".join(f"`{m}`" for m in sorted(installed)) or "(none installed)"
+                return f"Ollama model `{model_name}` not found at the endpoint.\nInstalled: {avail}"
+
+        ctx.session.set("model_override", target)
+        return f"Model set to: {target}"
 
     async def cmd_models(ctx: CommandContext) -> str:
         """List all models available at the configured endpoint."""
