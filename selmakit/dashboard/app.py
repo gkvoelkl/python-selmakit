@@ -147,6 +147,31 @@ def render_html_files(text: str) -> None:
         components.html(html, height=600, scrolling=True)
 
 
+def render_tool_activity(target: Any, lines: List[str]) -> None:
+    """Render the verbose tool-activity log (→ calls, ← results, 💭 thinking)
+    into ``target`` (an ``st.empty()`` placeholder), collapsible so it stays out
+    of the way of the actual reply. No-op when there is nothing to show."""
+    if not lines:
+        return
+    with target.container():
+        with st.expander("🔧 Tool-Aktivität", expanded=True):
+            st.markdown("\n".join(lines))
+
+
+def render_approval(pending: List[dict]) -> None:
+    """Render the approval prompt + Freigeben/Ablehnen buttons for gated tool
+    calls awaiting a decision. Clicking queues /approve or /deny as the next turn."""
+    names = "\n".join(f"- `{p.get('tool_name','tool')}({p.get('args','')})`" for p in pending)
+    st.warning(f"🔐 **Freigabe nötig** für folgende Tool-Aufruf(e):\n{names}")
+    c1, c2, _ = st.columns([1, 1, 3])
+    if c1.button("✅ Freigeben", key="mcp_approve", use_container_width=True):
+        st.session_state.pending_prompt = "/approve"
+        st.rerun()
+    if c2.button("🚫 Ablehnen", key="mcp_deny", use_container_width=True):
+        st.session_state.pending_prompt = "/deny"
+        st.rerun()
+
+
 def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
     """Render the dashboard. Either pass a ``DashboardConfig`` or keyword
     overrides (e.g. ``run(title=..., image=..., input_placeholder=...)``)."""
@@ -300,21 +325,32 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
     poll_alerts()
 
     # -- Chat
-    for message in st.session_state.messages:
+    last_idx = len(st.session_state.messages) - 1
+    for idx, message in enumerate(st.session_state.messages):
         if message["role"] == "notification":
             st.warning(f"🔔 {message['content']}")
         elif message["role"] == "cron":
             st.info(f"⏰ {message['content']}")
         else:
             with st.chat_message(message["role"]):
+                if message["role"] == "assistant" and message.get("tool_activity"):
+                    render_tool_activity(st.empty(), message["tool_activity"])
                 st.markdown(message["content"])
                 if message["role"] == "assistant":
                     render_html_files(message["content"])
+                    # Only the most recent message can still await a decision.
+                    if message.get("pending_approval") and idx == last_idx:
+                        render_approval(message["pending_approval"])
 
-    if prompt := st.chat_input(cfg.input_placeholder):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    # A queued /approve or /deny (from the approval buttons) takes precedence
+    # over freshly typed input; both drive an identical streamed turn.
+    typed_prompt = st.chat_input(cfg.input_placeholder)
+    prompt = st.session_state.pop("pending_prompt", None) or typed_prompt
+    if prompt:
+        display = {"/approve": "✅ Freigegeben", "/deny": "🚫 Abgelehnt"}.get(prompt, prompt)
+        st.session_state.messages.append({"role": "user", "content": display})
         with st.chat_message("user"):
-            st.markdown(prompt)
+            st.markdown(display)
 
         with st.chat_message("assistant"):
             try:
@@ -323,16 +359,46 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                     "text": prompt,
                     "user_name": cfg.user_name,
                 }
+                activity_box = st.empty()
                 tool_status = st.empty()
                 reply_box = st.empty()
                 full_reply = ""
+                activity_lines: List[str] = []   # persistent verbose log (→/←)
+                thinking_buf = ""                 # accumulated reasoning deltas
+                pending_approval: List[dict] = []  # gated tool calls awaiting a decision
+
+                def _activity() -> List[str]:
+                    lines = list(activity_lines)
+                    if thinking_buf.strip():
+                        lines.append("> 💭 " + thinking_buf.strip().replace("\n", "\n> "))
+                    return lines
 
                 with httpx.Client() as client:
                     with client.stream("POST", cfg.stream_url, json=payload, timeout=cfg.stream_timeout) as response:
                         for event in parse_sse_events(response):
                             match event.get("type"):
                                 case "tool":
-                                    tool_status.caption(f"🔧 {event.get('name', 'tool')}…")
+                                    name = event.get("name", "tool")
+                                    args = event.get("args")
+                                    if args is not None:
+                                        activity_lines.append(f"→ **{name}**(`{args}`)")
+                                        render_tool_activity(activity_box, _activity())
+                                    else:
+                                        tool_status.caption(f"🔧 {name}…")
+                                case "tool_result":
+                                    name = event.get("name", "tool")
+                                    dur = event.get("duration")
+                                    dur_s = f" ({dur:.2f}s)" if isinstance(dur, (int, float)) else ""
+                                    mark = "⚠️ ←" if event.get("error") else "←"
+                                    activity_lines.append(
+                                        f"{mark} **{name}**{dur_s}:\n```\n{event.get('result', '')}\n```"
+                                    )
+                                    render_tool_activity(activity_box, _activity())
+                                case "thinking":
+                                    thinking_buf += event.get("text", "")
+                                    render_tool_activity(activity_box, _activity())
+                                case "approval":
+                                    pending_approval = event.get("pending", []) or []
                                 case "chunk":
                                     tool_status.empty()
                                     full_reply += event.get("text", "")
@@ -345,7 +411,15 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                                     reply_box.markdown(full_reply)
 
                 render_html_files(full_reply)
-                st.session_state.messages.append({"role": "assistant", "content": full_reply})
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": full_reply,
+                    "tool_activity": _activity(),
+                    "pending_approval": pending_approval,
+                })
+                # Rerun so the approval buttons render for the new last message.
+                if pending_approval:
+                    st.rerun()
             except httpx.ConnectError:
                 st.error("❌ Gateway unreachable. Is `gateway.py` running?")
             except RuntimeError as e:

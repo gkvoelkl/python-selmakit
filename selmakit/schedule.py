@@ -201,7 +201,7 @@ class ScheduleRunner:
             chunks: list[str] = []
             try:
                 async with self._agent.run_stream(
-                    prompt, session_key=session_key, extra_capabilities=[hb_cap]
+                    prompt, session_key=session_key, extra_capabilities=[hb_cap], unattended=True
                 ) as result:
                     async for chunk in result.stream_text(delta=True):
                         chunks.append(chunk)

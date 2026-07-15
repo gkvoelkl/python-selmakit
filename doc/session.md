@@ -55,6 +55,8 @@ A flat JSON object. Missing file → treated as `{}`. Known keys:
 |---|---|---|---|---|
 | `last_interaction_at` | ISO-8601 UTC | `touch()` after each turn | `is_fresh()`, `list_sessions()` | Timestamp of the last turn; drives stale detection. |
 | `thinking` | `off`/`low`/`medium`/`high` | `/think` command | `SessionThinkingCapability` | Per-session reasoning effort. Absent ⇒ falls back to the capability default. |
+| `verbose` | bool | `/verbose on\|off` command | `Gateway._worker`, `/status` | When true, the webchat stream surfaces tool calls (`→ name(args)`), results (`← name: …`), tool errors, per-tool timing and reasoning deltas. Absent ⇒ off. |
+| `pending_approvals` | list of `{tool_call_id, tool_name, args}` \| null | `Agent._finalize_run` (set when a turn defers, cleared otherwise) | `Gateway._worker` (emits `approval` event), `Agent._prepare_approval_resume`, `/status` | Gated MCP tool calls awaiting `/approve` or `/deny`. Present ⇒ the last turn ended in a `DeferredToolRequests`. See CLAUDE.md "Tool approval". |
 | `last_system_prompt` | string | after each **user** turn | `/systemprompt`, `Agent.last_system_prompt()` | The instructions string as last actually sent to the model. |
 | `model_override` | string | `/model <name>` | `/model`, `/status` | Recorded/displayed per session. **Note:** not currently consumed by the run loop — model dispatch still uses the configured model. |
 | `session_type` | `user`/`schedule` | schedule runner (sets `schedule` on isolated sessions) | `list_sessions()`, cron/schedule targeting | Distinguishes user chats from scheduled/heartbeat sessions. Defaults to `user` when absent. |

@@ -159,6 +159,7 @@ Composition rules: `before_*` fires in declared order, `after_*` fires in revers
 | `RuntimeInfoCapability` | dynamic `get_instructions` | `host / os / model / date` one-liner |
 | `BootstrapCapability` | dynamic `get_instructions` | Onboarding hint while `BOOTSTRAP.md` has content |
 | `SessionThinkingCapability` | dynamic `get_model_settings` | Reads `"thinking"` from session meta via `ctx.deps` |
+| `McpCapability` | `get_toolset` | One `MCPToolset` per configured MCP server (stdio/HTTP), merged into a `CombinedToolset`; optional `prefix`/`allow_tools`/`require_approval` (see [Tool approval](#tool-approval-deferred-tools)) |
 
 Plus the pydantic-ai-shipped provider-adaptive tools:
 
@@ -166,6 +167,12 @@ Plus the pydantic-ai-shipped provider-adaptive tools:
 |---|---|
 | `WebSearch(local="duckduckgo")` | Native on supporting providers, DuckDuckGo fallback |
 | `WebFetch(local=True)` | Native on supporting providers, markdownify fallback |
+
+And one **optional** capability borrowed from [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) (the official capability library — complementary to selmakit, which is the surrounding *runtime*):
+
+| Capability | Notes |
+|---|---|
+| `SubAgents` (`pydantic_ai_harness.subagents`) | `delegate_task(agent_name, task)` runs a named sub-agent in isolation. Built from the `subagents` config by `build_subagents_capability()` (lazy import), added to `default_capabilities` when enabled. Needs the `subagents` extra. This is the template for adopting further harness capabilities (`shell`, `planning`, richer `compaction`) instead of hand-rolling them. |
 
 ### Walking the capability tree
 
@@ -179,9 +186,9 @@ Plus the pydantic-ai-shipped provider-adaptive tools:
 
 The capability system is great for things that fit inside pydantic-ai's run lifecycle. Some selmakit features sit *outside* it and stay in the wrapper class:
 
-### Slash commands (`/reset`, `/status`, `/think`, `/skill`, …)
+### Slash commands (`/reset`, `/status`, `/think`, `/verbose`, `/mcp`, `/approve`, `/skill`, …)
 
-Slash commands are intercepted **before** the LLM is called. `agent.run_stream()` checks if the prompt starts with `/`, dispatches to the handler, and yields a synthetic stream result.
+Slash commands are intercepted **before** the LLM is called. `agent.run_stream()` checks if the prompt starts with `/`, dispatches to the handler, and yields a synthetic stream result. Two commands are special-cased even earlier in `_prepare_run`: `/skill` rewrites the prompt into an "Execute skill" turn, and `/approve`/`/deny` resume a deferred tool-approval run (see [Tool approval](#tool-approval-deferred-tools)) rather than reply.
 
 In principle, `wrap_run` could host this. In practice, streaming (`run_stream`/`run_stream_events`) returns a context-manager / async generator structure that's awkward to substitute via `wrap_run`. The wrapper class is simpler and explicit.
 
@@ -203,30 +210,53 @@ Runs entirely outside the LLM loop. `ScheduleRunner` is an `asyncio` task that t
 
 ---
 
+## MCP Servers & Tool Approval
+
+### The MCP client
+
+`McpCapability` (`capabilities.py`) attaches external [MCP](https://modelcontextprotocol.io) servers as tools. It reads the `mcp` section of `selmakit.json` — standard `mcpServers` fields plus selmakit extras — and, per enabled server, builds an `MCPToolset` over an explicit `StdioTransport` (`command`/`args`/`env`/`cwd`) or `StreamableHttpTransport` (`url`/`headers`). Modifiers are chained in order: `allow_tools` → `filtered()`, `require_approval` → `approval_required()`, `prefix` → `prefixed()`. All servers merge into one `CombinedToolset`. `${VAR}` in `env`/`headers` is expanded from the environment so secrets stay out of the JSON. The capability is added to `default_capabilities` only when `mcp.enabled` and at least one server is configured.
+
+The underlying `fastmcp` client ships with pydantic-ai's mcp extra (no extra install). Connections are held open for the gateway's lifetime: `Gateway.serve()` wraps its `asyncio.gather` in `async with self.agent:`, and `Agent.__aenter__`/`__aexit__` delegate to the pydantic-ai agent context, which starts all `MCPToolset`s once. Entering is a no-op if already entered, so per-run streaming calls are unaffected; a standalone `agent.run(...)` outside the context still auto-connects per run.
+
+Runtime management is via the `/mcp` command: list servers with their state, or `/mcp enable|disable <name>` to patch `selmakit.json`. Because toolsets are built once at startup, a toggle takes effect on the next gateway restart (the reply says so).
+
+### Tool approval (deferred tools)
+
+A server configured with `require_approval: true` has its tool calls gated behind human approval, built on pydantic-ai 2.9's deferred-tools API. The `Agent` is constructed with `output_type=[str, DeferredToolRequests]`; when the model calls a gated tool the run **ends with a `DeferredToolRequests` output instead of executing it** (a normal turn's output stays a plain `str`).
+
+`Agent._finalize_run` detects that output and records the pending calls in the session's `pending_approvals` meta (`[{tool_call_id, tool_name, args}]`); `Gateway._worker` then emits an `approval` SSE event. The decision comes back as an ordinary turn — `/approve` or `/deny` (the dashboard's ✅/🚫 buttons send exactly these). `_prepare_run` intercepts them and, via `_prepare_approval_resume`, resumes the deferred run with a `DeferredToolResults` (`True` to approve, `ToolDenied` to deny) and **no new user prompt** (`effective_prompt=None`). Approving executes the tool; denying tells the model it was rejected. A resume can defer again (chained approvals), re-setting `pending_approvals`.
+
+**Unattended runs never wait for a human.** Heartbeat and cron call `run_stream(..., unattended=True)`; `_run_unattended_autodeny` runs non-streamed and auto-denies any gated call in a loop (capped by `_MAX_APPROVAL_ITERATIONS`), so a gated tool is hard-blocked rather than hanging the schedule.
+
+---
+
 ## Message Flow (One User Turn)
 
 1. **Channel receives a message** — `WebChatChannel.stream` (FastAPI handler) or `TelegramChannel._on_message` (PTB handler).
 2. **`QueueItem` enqueued** — `await queue.put(QueueItem(session_key, prompt, reply))`. The `reply` handle abstracts how to stream output back to the originating channel.
 3. **Worker dequeues** — `Gateway._worker()` calls `async with agent.run_stream_events(prompt, session_key=…) as (is_cmd, value): …`.
 4. **Pre-run pipeline** (in `selmakit.Agent._prepare_run`):
+   - If prompt is `/approve`/`/deny`: resume the deferred run with a `DeferredToolResults` (no new prompt) — see [Tool approval](#tool-approval-deferred-tools).
    - If prompt starts with `/skill <name>`: rewrite to `"Execute skill <name>."`
    - Else if prompt starts with `/`: dispatch to slash-command handler → return `(True, text)` and skip LLM call.
    - Stale-session check (`JsonlStore.is_fresh`) → clear session if expired.
    - Load message history from `.selmakit/sessions/<session_key>.json`.
    - If history > 50 messages: run `memory_flush()` + `compact_session()`.
-   - Build kwargs: `message_history`, `deps=session_key`.
+   - Build kwargs: `message_history`, `deps=session_key` (+ `deferred_tool_results` on a resume, + per-run `model` on a live `/model` override).
 5. **LLM run** — `pydantic_ai.Agent.run_stream_events(prompt, message_history=…, deps=…)`.
    - pydantic-ai assembles the system prompt by concatenating each capability's `get_instructions()` contribution.
    - `SessionThinkingCapability.get_model_settings()` runs; if session meta has `"thinking": "high"`, `reasoning_effort=high` flows into the model request.
-   - Tool calls flow as `FunctionToolCallEvent` → forwarded to the channel as SSE `tool` events.
+   - Tool calls flow as `FunctionToolCallEvent` → forwarded to the channel as SSE `tool` events. When the session's `verbose` flag is on, `Gateway._worker` also forwards args, `FunctionToolResultEvent` (as `tool_result`, with timing), and `ThinkingPart` deltas (as `thinking`).
    - Text deltas flow as `TextPartDelta` → SSE `chunk` events.
-6. **Post-run** — `result.all_messages()` saved to disk, session `touch()`ed.
+6. **Post-run** (`Agent._finalize_run`) — `result.all_messages()` saved to disk, session `touch()`ed, `last_system_prompt` cached. If the run ended in a `DeferredToolRequests` (a gated tool awaiting approval), the pending calls are recorded in the `pending_approvals` meta key and the worker emits an `approval` SSE event; otherwise `pending_approvals` is cleared.
+
+The agent is entered once at gateway startup (`async with self.agent:` in `Gateway.serve()`), so `MCPToolset` connections are opened a single time and held for the gateway's lifetime rather than re-established per run.
 
 ---
 
 ## Migration Story: pydantic-ai 1.x → 2.0
 
-selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta) reshaped the architecture:
+selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta) reshaped the architecture (the project now tracks **2.9.x**, which added the deferred-tools API that [Tool approval](#tool-approval-deferred-tools) builds on):
 
 | Before (1.x) | After (2.0) | Mechanism |
 |---|---|---|
@@ -259,15 +289,18 @@ The Streamlit dashboard (`selmakit/dashboard/`, started via a thin `dashboard.py
 ### Chat via HTTP/SSE
 
 ```
-POST /webchat/stream  →  SSE  →  events: tool, chunk, error, done
+POST /webchat/stream  →  SSE  →  events: tool, chunk, error, done (+ approval; + tool_result, thinking when verbose)
 ```
 
 Handled by `WebChatChannel`. The SSE event schema is a stable contract:
 
 | Event | Payload | Meaning |
 |---|---|---|
-| `tool` | `{"name": "memory_search"}` | Tool call started |
+| `tool` | `{"name": "memory_search"}` (+ `"args"` when verbose) | Tool call started |
 | `chunk` | `{"text": "…"}` | Text delta |
+| `tool_result` | `{"name", "result", "duration", "error"}` | Tool returned (verbose only) |
+| `thinking` | `{"text": "…"}` | Reasoning delta (verbose only) |
+| `approval` | `{"pending": [{"tool_call_id", "tool_name", "args"}]}` | Gated tool call(s) awaiting `/approve`/`/deny` |
 | `error` | `{"message": "…"}` | Run failed |
 | `done` | `{}` | Stream complete |
 
@@ -291,10 +324,10 @@ The dashboard polls this endpoint to surface proactive turns from the heartbeat 
 
 ```
 .selmakit/
-  selmakit.json          — config (cached 120s by load_config)
+  selmakit.json          — config (cached 120s by load_config; incl. mcp servers)
   sessions/
     <session_key>.json   — message history (JSONL via TypeAdapter)
-    <session_key>.meta.json — thinking level, last_interaction_at, model_override
+    <session_key>.meta.json — thinking, verbose, last_interaction_at, model_override, pending_approvals
   cron/
     jobs.json            — agent-managed cron jobs (CronStore)
   workspace/
@@ -323,7 +356,7 @@ selmakit/
   __init__.py           — public exports
   agent.py              — selmakit.Agent (thin wrapper around pydantic_ai.Agent)
   gateway.py            — Gateway composition root + GatewayContext + default_capabilities()
-  capabilities.py       — Filesystem/Workspace/Skills/Runtime/Bootstrap/SessionThinking capabilities
+  capabilities.py       — Filesystem/Workspace/Skills/Runtime/Bootstrap/SessionThinking/Mcp capabilities
   commands.py           — slash-command handlers + CommandContext + SessionProxy
   config.py             — SelmaKitConfig (Pydantic) + load_config() with 120s cache
   cron.py               — agent-managed cron jobs (CronCapability/CronService/CronStore)
@@ -344,6 +377,8 @@ selmakit/
     app.py              — reusable Streamlit app: run(title=, image=, input_placeholder=, …)
     config.py           — DashboardConfig (branding + gateway_base_url)
 
+examples/
+  weather_mcp.py        — self-contained reference MCP server (Open-Meteo) for the MCP client
 gateway.py              — reference entry point: Gateway.from_config().run()
 dashboard.py            — reference entry point: selmakit.dashboard.run(...)
 setup.py                — initializes .selmakit/ structure on first run

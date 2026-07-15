@@ -8,7 +8,12 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from pydantic_ai import Agent as _PydanticAgent
+from pydantic_ai import (
+    Agent as _PydanticAgent,
+    DeferredToolRequests,
+    DeferredToolResults,
+    ToolDenied,
+)
 
 from selmakit.commands import CommandContext, RunPrompt, SessionProxy
 from selmakit.schedule import ScheduleConfig, ScheduleContext, ScheduleRunner
@@ -17,6 +22,7 @@ from selmakit.session import JsonlStore
 logger = logging.getLogger(__name__)
 
 _MAX_MESSAGES_BEFORE_COMPACT = 50
+_MAX_APPROVAL_ITERATIONS = 5  # safety cap on chained approval/deny resume loops
 
 
 class _CommandResult:
@@ -104,6 +110,10 @@ class Agent:
             system_prompt=system_prompt or (),
             tools=all_tools,
             capabilities=all_caps,
+            # DeferredToolRequests lets approval-gated tools (MCP require_approval)
+            # surface as a run output instead of executing; harmless for normal
+            # turns, whose output stays a plain str.
+            output_type=[str, DeferredToolRequests],
         )
         self._session_store = session_store or JsonlStore(
             path=str(self._state_dir / "sessions"),
@@ -296,6 +306,23 @@ class Agent:
         """Start all registered schedules."""
         asyncio.run(self.run_schedules())
 
+    # ---------------------------------------------------------- agent context
+
+    async def __aenter__(self) -> "Agent":
+        """Enter the underlying pydantic-ai agent context.
+
+        This starts all ``MCPToolset``s registered via capabilities once, so
+        their connections (e.g. a stdio MCP subprocess) stay open for the whole
+        gateway lifetime instead of being re-established on every run. Entering
+        is a no-op if the agent is already entered, so the per-run
+        ``run_stream``/``run_stream_events`` calls keep working unchanged.
+        """
+        await self._agent.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc_info) -> Any:
+        return await self._agent.__aexit__(*exc_info)
+
     # ---------------------------------------- compaction + memory flush
 
     async def memory_flush(self, session_key: str) -> None:
@@ -393,13 +420,120 @@ class Agent:
             self._override_models[cache_key] = model
         return model
 
-    async def _prepare_run(self, prompt: str, session_key: str) -> tuple[str | None, str, dict]:
+    # ------------------------------------------------- approval (deferred tools)
+
+    def pending_approvals(self, session_key: str) -> list[dict] | None:
+        """Approvals awaiting a /approve or /deny for this session, or None.
+
+        Each entry is ``{tool_call_id, tool_name, args}`` (args is a JSON string).
+        Set by the run loop whenever a turn ends in a ``DeferredToolRequests``.
+        """
+        if not self._session_store:
+            return None
+        return self._session_store.get_meta(session_key, "pending_approvals", None)
+
+    @staticmethod
+    def _extract_pending_approvals(result: Any) -> list[dict] | None:
+        """Return the pending-approval descriptors if ``result`` deferred, else None."""
+        out = getattr(result, "output", None)
+        if not isinstance(out, DeferredToolRequests):
+            return None
+        pending: list[dict] = []
+        for c in out.approvals:
+            try:
+                args = c.args_as_json_str()
+            except Exception:
+                args = str(getattr(c, "args", ""))
+            pending.append({"tool_call_id": c.tool_call_id, "tool_name": c.tool_name, "args": args})
+        return pending or None
+
+    def _finalize_run(self, session_key: str, result: Any) -> None:
+        """Persist messages + last-system-prompt and record/clear pending approvals."""
+        if not self._session_store or result is None:
+            return
+        messages = result.all_messages()
+        self._session_store.save(session_key, messages)
+        self._session_store.touch(session_key)
+        instr = self._extract_instructions(messages)
+        if instr:
+            self._session_store.set_meta(session_key, "last_system_prompt", instr)
+        self._session_store.set_meta(session_key, "pending_approvals", self._extract_pending_approvals(result))
+
+    async def _prepare_approval_resume(
+        self, prompt: str, session_key: str
+    ) -> tuple[str | None, str | None, dict]:
+        """Turn a /approve or /deny into a deferred-tool resume.
+
+        Returns the usual (command_text, effective_prompt, kwargs). On success
+        effective_prompt is ``None`` (a resume carries no new user prompt) and
+        kwargs holds ``deferred_tool_results``.
+        """
+        approve = prompt.strip().lower().startswith("/approve")
+        pending = self.pending_approvals(session_key)
+        if not pending:
+            return "Es steht derzeit nichts zur Freigabe aus.", "", {}
+
+        if approve:
+            approvals: dict[str, Any] = {p["tool_call_id"]: True for p in pending}
+        else:
+            approvals = {p["tool_call_id"]: ToolDenied(message="Vom Benutzer abgelehnt.") for p in pending}
+        # Clear now; the resume will re-set it if it defers again.
+        self._session_store.set_meta(session_key, "pending_approvals", None)
+
+        history = self._session_store.load(session_key) if self._session_store else []
+        kwargs: dict[str, Any] = {
+            "message_history": history,
+            "deps": session_key,
+            "deferred_tool_results": DeferredToolResults(approvals=approvals),
+        }
+        override_model = self._resolve_run_model(session_key)
+        if override_model is not None:
+            kwargs["model"] = override_model
+        return None, None, kwargs
+
+    async def _run_unattended_autodeny(self, prompt: str | None, session_key: str, kwargs: dict) -> str:
+        """Run to completion with no human present, auto-denying any approval-gated
+        tool call (heartbeat/cron). Returns the final text output ('' if none)."""
+        run_kwargs = dict(kwargs)
+        run_kwargs.pop("event_stream_handler", None)  # run() does not stream events
+        result = await (self._agent.run(**run_kwargs) if prompt is None
+                        else self._agent.run(prompt, **run_kwargs))
+
+        resume_kwargs = {k: v for k, v in run_kwargs.items() if k in ("deps", "model", "capabilities")}
+        guard = 0
+        while isinstance(result.output, DeferredToolRequests) and guard < _MAX_APPROVAL_ITERATIONS:
+            guard += 1
+            denials = {
+                c.tool_call_id: ToolDenied(
+                    message="Auto-denied: approval-required tool blocked in an unattended run."
+                )
+                for c in result.output.approvals
+            }
+            logger.info("Unattended run: auto-denied %d approval-gated call(s) | session=%s", len(denials), session_key)
+            result = await self._agent.run(
+                message_history=result.all_messages(),
+                deferred_tool_results=DeferredToolResults(approvals=denials),
+                **resume_kwargs,
+            )
+
+        if self._session_store:
+            self._session_store.save(session_key, result.all_messages())
+            self._session_store.touch(session_key)
+        return result.output if isinstance(result.output, str) else ""
+
+    async def _prepare_run(self, prompt: str, session_key: str) -> tuple[str | None, str | None, dict]:
         """Shared pre-processing for all run methods.
 
         Returns (command_text, effective_prompt, kwargs).
         command_text is non-None when a slash command was handled — caller should
-        return that text directly without calling the LLM.
+        return that text directly without calling the LLM. effective_prompt is
+        None for a deferred-tool resume (/approve, /deny): no new user prompt,
+        kwargs carries ``deferred_tool_results``.
         """
+        low = prompt.strip().lower()
+        if low == "/approve" or low.startswith("/approve ") or low == "/deny" or low.startswith("/deny "):
+            return await self._prepare_approval_resume(prompt, session_key)
+
         if prompt.lower().startswith("/skill "):
             from selmakit.skills import get_skill_path
             parts = prompt[7:].strip().split(None, 1)
@@ -458,6 +592,7 @@ class Agent:
         session_key: str = "default",
         event_handler: Any = None,
         extra_capabilities: Sequence[Any] | None = None,
+        unattended: bool = False,
     ):
         cmd_text, effective_prompt, kwargs = await self._prepare_run(prompt, session_key)
         if cmd_text is not None:
@@ -469,7 +604,16 @@ class Agent:
         if extra_capabilities:
             kwargs["capabilities"] = list(extra_capabilities)
 
-        async with self._agent.run_stream(effective_prompt, **kwargs) as result:
+        # Heartbeat/cron: no human to approve — resolve any gate by auto-denying,
+        # then hand the final text back as a one-shot "stream".
+        if unattended:
+            text = await self._run_unattended_autodeny(effective_prompt, session_key, kwargs)
+            yield _CommandResult(text)
+            return
+
+        stream_cm = (self._agent.run_stream(**kwargs) if effective_prompt is None
+                     else self._agent.run_stream(effective_prompt, **kwargs))
+        async with stream_cm as result:
             yield result
 
         if self._session_store and result.is_complete:
@@ -485,6 +629,11 @@ class Agent:
         """Yields a (is_command, value) tuple:
           - (True,  text_str)     — slash command result
           - (False, async_gen)    — pydantic-ai AgentStreamEvents
+
+        After the stream, if the turn ended in a ``DeferredToolRequests`` (an
+        approval-gated tool call), the pending approvals are recorded in the
+        session meta; the caller surfaces them and a later /approve or /deny
+        resumes the run. Passing /approve or /deny here IS that resume.
         """
         from pydantic_ai import AgentRunResultEvent
 
@@ -497,7 +646,9 @@ class Agent:
 
         async def _event_gen():
             nonlocal final_result
-            async with self._agent.run_stream_events(effective_prompt, **kwargs) as stream:
+            stream_cm = (self._agent.run_stream_events(**kwargs) if effective_prompt is None
+                         else self._agent.run_stream_events(effective_prompt, **kwargs))
+            async with stream_cm as stream:
                 async for event in stream:
                     if isinstance(event, AgentRunResultEvent):
                         final_result = event.result
@@ -506,10 +657,4 @@ class Agent:
 
         yield False, _event_gen()
 
-        if self._session_store and final_result is not None:
-            messages = final_result.all_messages()
-            self._session_store.save(session_key, messages)
-            self._session_store.touch(session_key)
-            instr = self._extract_instructions(messages)
-            if instr:
-                self._session_store.set_meta(session_key, "last_system_prompt", instr)
+        self._finalize_run(session_key, final_result)

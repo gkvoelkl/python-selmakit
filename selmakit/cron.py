@@ -187,7 +187,7 @@ class CronService:
 
         chunks: list[str] = []
         try:
-            async with self._agent.run_stream(job.prompt, session_key=session_key) as result:
+            async with self._agent.run_stream(job.prompt, session_key=session_key, unattended=True) as result:
                 async for chunk in result.stream_text(delta=True):
                     chunks.append(chunk)
         except Exception as e:

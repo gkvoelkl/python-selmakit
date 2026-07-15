@@ -7,6 +7,7 @@ instructions. Each is evaluated dynamically per run, so changes on disk
 """
 from __future__ import annotations
 
+import logging
 import os
 import platform
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ from selmakit.session import JsonlStore
 from selmakit.skills import build_skills_xml
 from selmakit.tools import make_filesystem_tools
 from selmakit.workspace import detect_bootstrap, load_workspace_files
+
+logger = logging.getLogger(__name__)
 
 
 _BOOTSTRAP_INSTRUCTIONS = "\n".join([
@@ -236,3 +239,78 @@ class HeartbeatCapability(AbstractCapability[Any]):
     @property
     def alert_text(self) -> str:
         return self._text
+
+
+def _expand_env(mapping: dict[str, str]) -> dict[str, str]:
+    """Expand ``${VAR}`` / ``$VAR`` in mapping values from the environment so
+    secrets live in the environment, not in selmakit.json."""
+    return {k: os.path.expandvars(v) for k, v in mapping.items()}
+
+
+@dataclass
+class McpCapability(AbstractCapability[Any]):
+    """Attach external MCP servers as tools.
+
+    Servers come from the ``mcp`` section of selmakit.json (the standard
+    ``mcpServers`` fields, so existing server configs port over unchanged). Each
+    server becomes an ``MCPToolset`` over an explicit stdio or HTTP transport;
+    optional per-server ``prefix`` namespaces its tool names and ``allow_tools``
+    whitelists them. All servers are merged into one ``CombinedToolset``.
+
+    The toolset is built once at construction. pydantic-ai opens/closes the
+    underlying connection around each run; keeping it open across runs (entering
+    the agent context once at startup) is a later optimization.
+    """
+
+    servers: dict[str, Any]  # name -> McpServerConfig
+    _toolset: Any = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        from pydantic_ai.mcp import (
+            MCPToolset, StdioTransport, StreamableHttpTransport,
+        )
+        from pydantic_ai.toolsets import CombinedToolset
+
+        try:
+            from fastmcp import Client
+        except ImportError as e:  # pragma: no cover
+            raise ImportError(
+                "MCP support needs the 'fastmcp' package (ships with pydantic-ai's "
+                "mcp extra). Install it or disable mcp in selmakit.json."
+            ) from e
+
+        toolsets: list[Any] = []
+        for name, s in self.servers.items():
+            if not getattr(s, "enabled", True):
+                continue
+
+            if s.command:
+                transport = StdioTransport(
+                    command=s.command, args=list(s.args),
+                    env=_expand_env(s.env) or None, cwd=s.cwd,
+                )
+            elif s.url:
+                transport = StreamableHttpTransport(
+                    url=s.url, headers=_expand_env(s.headers) or None,
+                )
+            else:
+                logger.warning("MCP server %r has neither command nor url — skipping", name)
+                continue
+
+            ts: Any = MCPToolset(Client(transport))
+            if s.allow_tools is not None:
+                allow = set(s.allow_tools)
+                ts = ts.filtered(lambda ctx, td, _a=allow: td.name in _a)
+            if getattr(s, "require_approval", False):
+                # Gate every call: the run returns a DeferredToolRequests instead
+                # of executing. Resolved via /approve /deny (see Agent) or auto-
+                # denied in unattended (heartbeat/cron) runs.
+                ts = ts.approval_required()
+            if s.prefix:
+                ts = ts.prefixed(s.prefix)
+            toolsets.append(ts)
+
+        self._toolset = CombinedToolset(toolsets) if toolsets else None
+
+    def get_toolset(self) -> AgentToolset[Any] | None:
+        return self._toolset

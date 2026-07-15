@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.8](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.9](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -36,8 +36,13 @@ It runs a local Ollama model by default, but the same `model` config knob also d
 | Skills | `SKILL.md` files — discovered, XML-injected into system prompt |
 | Filesystem tools | `FilesystemCapability(cwd=".")` — read/write/edit/ls/grep/find |
 | Web search & fetch | `WebSearch(local="duckduckgo")`, `WebFetch(local=True)` — native on supporting providers, local fallback otherwise |
+| External MCP servers | `McpCapability` — stdio/HTTP servers from `selmakit.json` (standard `mcpServers` shape), per-server `prefix`/`allow_tools`/`require_approval`; connections held open for the gateway's lifetime |
+| Tool approval | Gated MCP tools defer instead of executing; approve/deny via `/approve` `/deny` or the dashboard's ✅/🚫 buttons; auto-denied in unattended (heartbeat/cron) runs |
+| Sub-agent delegation | `SubAgents` (optional `subagents` extra, from [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness)) — `delegate_task` hands self-contained work to named, isolated sub-agents |
 | Dynamic prompt sections | `WorkspacePromptCapability`, `SkillsPromptCapability`, `RuntimeInfoCapability`, `BootstrapCapability` |
 | Per-session thinking | `SessionThinkingCapability` — `/think high` writes to session meta, capability picks it up |
+| Live model switching | Per-session `model_override` via `/model` or the dashboard selector — takes effect next turn, no restart |
+| Verbose mode | `/verbose on` streams tool calls/results/timing and reasoning deltas into a collapsible dashboard panel |
 | OpenTelemetry tracing | `pydantic_ai.Agent.instrument_all()` exporting OTLP/gRPC to a standalone Phoenix container (`arize-phoenix` is not a Python dependency — it pins pydantic-ai-slim<2) |
 | Streamlit dashboard | `selmakit.dashboard.run(title=, image=, input_placeholder=)` — brandable SSE chat + heartbeat alerts |
 | Reusable runtime | `Gateway.from_config(extra_capabilities=[...]).run()` — backend in one line |
@@ -224,9 +229,35 @@ The root `gateway.py` and `dashboard.py` in this repo are exactly such reference
     "active_hours": ["08:00", "22:00"],
     "timezone": "Europe/Berlin",
     "target": "last"
+  },
+  "mcp": {
+    "enabled": true,
+    "servers": {
+      "weather": {
+        "command": "uv",
+        "args": ["run", "examples/weather_mcp.py"],
+        "require_approval": true
+      }
+    }
+  },
+  "subagents": {
+    "enabled": true,
+    "agents": [
+      {
+        "name": "researcher",
+        "description": "Researches facts on the web and summarizes with sources.",
+        "system_prompt": "You are a research assistant. Use web tools, check multiple sources, answer concisely.",
+        "max_calls": 8,
+        "timeout_seconds": 120
+      }
+    ]
   }
 }
 ```
+
+The `subagents` section (optional — install the extra with `uv sync --extra subagents`) enables **task delegation** via the `SubAgents` capability from [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness). Each entry becomes an isolated sub-agent (its own `system_prompt`, optional `model`, plus filesystem + web tools) that the main agent invokes by `name` through a single `delegate_task(agent_name, task)` tool; `max_calls`/`timeout_seconds` bound each delegation. Sub-agents never see the parent conversation. Added to the default capabilities when `subagents.enabled` and at least one agent is configured.
+
+The `mcp` section attaches external [MCP](https://modelcontextprotocol.io) servers as tools (`McpCapability`, added to the default set when `mcp.enabled` and at least one server is configured). Each entry uses the standard `mcpServers` fields — stdio (`command`/`args`/`env`/`cwd`) or HTTP (`url`/`headers`) — plus selmakit extras: `enabled`, `prefix` (namespace the tool names), `allow_tools` (whitelist), and `require_approval` (gate every call behind human approval — the run defers and you resolve it with `/approve`/`/deny` or the dashboard buttons; unattended heartbeat/cron runs auto-deny). `${VAR}` in `env`/`headers` is expanded from the environment. `examples/weather_mcp.py` is a self-contained reference server (Open-Meteo, no API key). Manage servers at runtime with `/mcp`.
 
 Thinking effort is per session, not per agent. Use `/think low|medium|high|off` in a chat — the value lands in `.meta.json` and `SessionThinkingCapability` reads it from there on each run. On providers that don't support `reasoning_effort` natively, the setting is harmless (ignored).
 
@@ -299,12 +330,14 @@ agent = Agent.from_file(state_dir=".selmakit", capabilities=[WebSearch(local="du
 
 ### Capabilities
 
-`selmakit` ships a set of `pydantic_ai.capabilities.AbstractCapability` subclasses that bundle tools, instructions, and model settings. Each one is independent — drop any of them or write your own without touching the rest of the system.
+`selmakit` composes a set of `pydantic_ai.capabilities.AbstractCapability` subclasses that bundle tools, instructions, and model settings — its own, some shipped by pydantic-ai (`WebSearch`/`WebFetch`), and one optional from pydantic-ai-harness (`SubAgents`). Each one is independent — drop any of them or write your own without touching the rest of the system.
 
 | Capability | Contribution | Lifecycle |
 |---|---|---|
 | `FilesystemCapability(cwd)` | `read`/`write`/`edit`/`ls`/`grep`/`find` toolset bound to `cwd` | `get_toolset()` |
 | `WebSearch(local=...)` / `WebFetch(local=...)` | Native server-side on supporting providers, DuckDuckGo / markdownify fallback otherwise | `get_native_tools()` |
+| `McpCapability(servers)` | One `MCPToolset` per configured MCP server (stdio/HTTP), merged into a `CombinedToolset`; optional `prefix`/`allow_tools`/`require_approval` | `get_toolset()` |
+| `SubAgents(agents=...)` (harness) | `delegate_task` tool that runs a named sub-agent in isolation; from `pydantic-ai-harness` (optional `subagents` extra) | `get_toolset()` |
 | `WorkspacePromptCapability(workspace_dir)` | Injects all `*.md` files from the workspace under `## Workspace Files` | dynamic `get_instructions()` |
 | `SkillsPromptCapability(workspace_dir)` | Emits `<available_skills>` XML + selection rules | dynamic `get_instructions()` |
 | `RuntimeInfoCapability(model_name)` | One-line `host / os / model / date` runtime info; date re-evaluated each run | dynamic `get_instructions()` |
@@ -461,15 +494,19 @@ before, after = await agent.compact_session("user:42")
 | Command | Description |
 |---|---|
 | `/help` | List all commands |
-| `/status` | Model, thinking level, session, compaction countdown, next heartbeat |
-| `/reset` | Clear session history |
+| `/status` | Model, thinking level, verbose, session, compaction countdown, pending approvals, next heartbeat |
+| `/reset` / `/new` | Clear session history |
 | `/compact` | Flush facts to memory and summarize session |
-| `/model [name]` | Show or set the model |
+| `/model [name]` | Show or set the model (per-session override, applied live) |
 | `/models` | List models available at the configured endpoint |
 | `/think [off\|low\|medium\|high]` | Show or set thinking level |
+| `/verbose [on\|off]` | Show or toggle verbose mode (tool activity + reasoning in the stream) |
+| `/mcp [enable\|disable <name>]` | List MCP servers, or toggle one (applies on next restart) |
+| `/approve` / `/deny` | Approve or deny a pending gated tool call |
 | `/tools` | List registered tools |
 | `/skills` | List available skills |
 | `/skill <name> [args]` | Execute a skill |
+| `/cron` | List active cron jobs |
 | `/config` | Show current configuration |
 | `/systemprompt` | Show the system prompt as last sent to the model this session |
 | `/commands` | List all commands |
@@ -580,7 +617,7 @@ docker run -d --rm -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:latest
 selmakit/
   agent.py          — selmakit.Agent (wraps pydantic_ai.Agent)
   gateway.py        — Gateway runtime + GatewayContext + default_capabilities()
-  capabilities.py   — Filesystem/Workspace/Skills/Runtime/Bootstrap/SessionThinking capabilities
+  capabilities.py   — Filesystem/Workspace/Skills/Runtime/Bootstrap/SessionThinking/Mcp capabilities
   commands.py       — slash command handlers + CommandContext
   config.py         — SelmaKitConfig, load_config() with 120s cache
   cron.py           — agent-managed cron jobs (CronCapability/Service/Store)
@@ -599,6 +636,8 @@ selmakit/
     app.py          — reusable Streamlit app: run(title=, image=, input_placeholder=, …)
     config.py       — DashboardConfig
 
+examples/
+  weather_mcp.py    — self-contained reference MCP server (Open-Meteo) for the MCP client
 gateway.py          — reference entry point: Gateway.from_config().run()
 dashboard.py        — reference entry point: selmakit.dashboard.run(...)
 setup.py            — initializes .selmakit/ structure, config, and workspace files
@@ -612,7 +651,7 @@ start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.8.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.9.1` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `python-telegram-bot` | Telegram channel |
 | `httpx` | Async HTTP client |
@@ -620,6 +659,12 @@ start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 | `opentelemetry-sdk` + `opentelemetry-exporter-otlp-proto-grpc` | OpenTelemetry tracing → OTLP/gRPC export (Phoenix runs as a standalone container, not a Python dep — see Tracing section) |
 | `python-dotenv` | `.env` loading |
 | `rich` | Colored terminal output in `setup.py` |
+
+**Optional extras:**
+
+| Extra | Package | Enables |
+|---|---|---|
+| `subagents` | `pydantic-ai-harness>=0.7.0` | Sub-agent delegation (`SubAgents` capability). Install with `uv sync --extra subagents`. |
 
 ---
 

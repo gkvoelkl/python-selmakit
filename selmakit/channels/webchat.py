@@ -34,8 +34,29 @@ class WebChatReply:
     async def send_chunk(self, text: str) -> None:
         await self._queue.put({"type": "chunk", "text": text})
 
-    async def send_tool(self, name: str) -> None:
-        await self._queue.put({"type": "tool", "name": name})
+    async def send_tool(self, name: str, args: str | None = None) -> None:
+        event = {"type": "tool", "name": name}
+        if args is not None:
+            event["args"] = args
+        await self._queue.put(event)
+
+    async def send_tool_result(
+        self, name: str, result: str, duration: float | None = None, error: bool = False
+    ) -> None:
+        await self._queue.put({
+            "type": "tool_result",
+            "name": name,
+            "result": result,
+            "duration": duration,
+            "error": error,
+        })
+
+    async def send_thinking(self, text: str) -> None:
+        await self._queue.put({"type": "thinking", "text": text})
+
+    async def send_approval(self, pending: list) -> None:
+        """Emit an approval request for gated tool calls awaiting /approve or /deny."""
+        await self._queue.put({"type": "approval", "pending": pending})
 
     async def done(self) -> None:
         await self._queue.put({"type": "done", "session_key": self._session_key})

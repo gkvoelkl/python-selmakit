@@ -160,6 +160,35 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
         ctx.session.set("thinking", level)
         return f"Thinking level set to: {level}"
 
+    async def cmd_verbose(ctx: CommandContext) -> str:
+        """Show or toggle verbose mode (on / off).
+
+        When on, the webchat stream surfaces tool calls (→ name(args)), their
+        results (← name: …), tool errors, per-tool timing and — if /think is
+        active — reasoning deltas, so you can see what the model is doing.
+        """
+        if not ctx.args:
+            state = "on" if ctx.session.get("verbose") else "off"
+            return f"Verbose mode is `{state}`."
+        arg = ctx.args.strip().lower()
+        if arg not in {"on", "off"}:
+            return f"Invalid value `{arg}`. Use: on, off."
+        ctx.session.set("verbose", arg == "on")
+        return f"Verbose mode set to: {arg}"
+
+    # ── Approval (deferred / gated tools) ─────────────────────
+    # These are intercepted in Agent._prepare_run before dispatch (they resume a
+    # deferred run); the handlers here only run when nothing is pending and exist
+    # mainly so /help lists them.
+
+    async def cmd_approve(ctx: CommandContext) -> str:
+        """Approve the pending gated tool call(s) and continue (or use the ✅ button)."""
+        return "Es steht derzeit nichts zur Freigabe aus."
+
+    async def cmd_deny(ctx: CommandContext) -> str:
+        """Deny the pending gated tool call(s) awaiting approval (or use the 🚫 button)."""
+        return "Es steht derzeit nichts zur Freigabe aus."
+
     # ── Config & Status ───────────────────────────────────────
 
     async def cmd_config(ctx: CommandContext) -> str:
@@ -171,6 +200,7 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
         agent: Agent = ctx.agent
         model_name = ctx.session.get("model_override") or config.model.model
         thinking = ctx.session.get("thinking") or "off"
+        verbose = "on" if ctx.session.get("verbose") else "off"
         msg_count = agent.message_count(ctx.session_key)
         until_compact = agent.messages_until_compaction(ctx.session_key)
 
@@ -179,10 +209,16 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
             "",
             f"`model`      {model_name}",
             f"`thinking`   {thinking}",
+            f"`verbose`    {verbose}",
             "",
             f"`session`    {ctx.session_key}",
             f"`messages`   {msg_count}  (compaction in {until_compact} messages)",
         ]
+
+        pending = agent.pending_approvals(ctx.session_key)
+        if pending:
+            names = ", ".join(p.get("tool_name", "tool") for p in pending)
+            lines.append(f"`approval`   {len(pending)} pending — {names}  (/approve · /deny)")
 
         schedules = agent.get_schedules()
         if schedules:
@@ -253,6 +289,75 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
         jobs = cron_store.load()
         return _format_jobs(jobs)
 
+    # ── MCP ───────────────────────────────────────────────────
+
+    async def cmd_mcp(ctx: CommandContext) -> str:
+        """List MCP servers, or toggle one: /mcp [enable|disable <name>].
+
+        enable/disable patches selmakit.json and takes effect on the next gateway
+        restart (MCP toolsets are built once at startup).
+        """
+        import json as _json
+        agent: Agent = ctx.agent
+        cfg_path = agent.workspace_dir.parent / "selmakit.json"
+
+        def _load() -> dict:
+            try:
+                return _json.loads(cfg_path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+
+        parts = ctx.args.strip().split()
+        if parts:
+            action = parts[0].lower()
+            if action not in ("enable", "disable"):
+                return "Usage: `/mcp [enable|disable <name>]`"
+            if len(parts) < 2:
+                return f"Usage: `/mcp {action} <server-name>`"
+            name = parts[1]
+            data = _load()
+            servers = data.get("mcp", {}).get("servers", {})
+            if name not in servers:
+                known = ", ".join(f"`{n}`" for n in servers) or "—"
+                return f"Unbekannter MCP-Server `{name}`. Bekannt: {known}."
+            servers[name]["enabled"] = (action == "enable")
+            cfg_path.write_text(_json.dumps(data, indent=4), encoding="utf-8")
+            return f"MCP-Server `{name}` {'aktiviert' if action == 'enable' else 'deaktiviert'} — wird beim nächsten Gateway-Neustart wirksam."
+
+        # No args → list servers (fresh from disk).
+        mcp = _load().get("mcp", {})
+        servers = mcp.get("servers", {})
+        if not servers:
+            return "Keine MCP-Server in selmakit.json konfiguriert."
+        # What was actually loaded at startup (the captured config).
+        startup_loaded = {n for n, s in config.mcp.servers.items() if s.enabled} if config.mcp.enabled else set()
+
+        lines = [f"**MCP-Server** — global: {'enabled' if mcp.get('enabled') else 'disabled'}", ""]
+        for name, s in servers.items():
+            enabled = s.get("enabled", True)
+            if s.get("command"):
+                transport = " ".join([s["command"], *s.get("args", [])]).strip()
+            elif s.get("url"):
+                transport = s["url"]
+            else:
+                transport = "—"
+            extras = []
+            if s.get("prefix"):
+                extras.append(f"prefix={s['prefix']}")
+            if s.get("allow_tools") is not None:
+                extras.append(f"allow={','.join(s['allow_tools'])}")
+            if s.get("require_approval"):
+                extras.append("approval=on")
+            extra_s = ("  · " + " · ".join(extras)) if extras else ""
+            lines.append(f"• `{name}` — {'✅ enabled' if enabled else '⛔ disabled'} | {transport}{extra_s}")
+            if enabled and mcp.get("enabled"):
+                lines.append(f"  ↳ {'geladen (läuft)' if name in startup_loaded else 'aktiviert — Neustart lädt den Server'}")
+            elif not enabled and name in startup_loaded:
+                lines.append("  ↳ noch geladen — Neustart entlädt den Server")
+
+        lines += ["", "Ändern: `/mcp enable <name>` · `/mcp disable <name>` (wirkt nach Neustart)."]
+        return "\n".join(lines)
+
     # ── Help ──────────────────────────────────────────────────
 
     async def cmd_help(ctx: CommandContext) -> str:
@@ -266,6 +371,9 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
         "/model":    cmd_model,
         "/models":   cmd_models,
         "/think":    cmd_think,
+        "/verbose":  cmd_verbose,
+        "/approve":  cmd_approve,
+        "/deny":     cmd_deny,
         "/config":   cmd_config,
         "/status":   cmd_status,
         "/systemprompt": cmd_systemprompt,
@@ -273,5 +381,6 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
         "/skills":   cmd_skills,
         "/commands": cmd_commands,
         "/cron":     cmd_cron,
+        "/mcp":      cmd_mcp,
         "/help":     cmd_help,
     }

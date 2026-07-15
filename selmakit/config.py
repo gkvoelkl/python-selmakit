@@ -64,12 +64,59 @@ class HeartbeatConfig(BaseModel):
     isolated_session: bool = False
 
 
+class McpServerConfig(BaseModel):
+    """One MCP server, in the standard ``mcpServers`` shape (same fields Claude
+    Desktop / Claude Code use) plus a few selmakit extras.
+
+    Provide either the stdio fields (``command``/``args``/``env``/``cwd`` — a
+    local subprocess) or the HTTP fields (``url``/``headers`` — a remote server).
+    ``env`` and ``headers`` values are expanded with ``os.path.expandvars`` so
+    ``${VAR}`` pulls secrets from the environment instead of the JSON.
+    """
+    # stdio transport (local subprocess)
+    command: str | None = None
+    args: list[str] = []
+    env: dict[str, str] = {}
+    cwd: str | None = None
+    # http transport (remote server)
+    url: str | None = None
+    headers: dict[str, str] = {}
+    # selmakit extras
+    enabled: bool = True
+    prefix: str | None = None            # namespace this server's tool names
+    allow_tools: list[str] | None = None  # whitelist by (unprefixed) tool name; None = all
+    require_approval: bool = False       # gate this server's tool calls behind human approval
+
+
+class McpConfig(BaseModel):
+    enabled: bool = False
+    servers: dict[str, McpServerConfig] = {}
+
+
+class SubAgentConfig(BaseModel):
+    """One delegatable sub-agent. The parent calls it by ``name`` via the
+    ``delegate_task`` tool; each run is isolated (never sees the parent chat)."""
+    name: str
+    description: str                      # shown to the parent so it knows when to delegate
+    system_prompt: str = ""
+    model: str | None = None             # "provider/model"; defaults to the main model
+    timeout_seconds: float | None = None  # wall-clock budget per delegation
+    max_calls: int | None = None         # tool-call budget per delegation
+
+
+class SubAgentsConfig(BaseModel):
+    enabled: bool = False
+    agents: list[SubAgentConfig] = []
+
+
 class SelmaKitConfig(BaseModel):
     model: ModelConfig = ModelConfig()
     memory: MemoryConfig = MemoryConfig()
     channels: ChannelsConfig = ChannelsConfig()
     session: SessionConfig = SessionConfig()
     heartbeat: HeartbeatConfig = HeartbeatConfig()
+    mcp: McpConfig = McpConfig()
+    subagents: SubAgentsConfig = SubAgentsConfig()
 
 
 def build_model(cfg: ModelConfig):
