@@ -128,7 +128,7 @@ A capability is a `@dataclass` subclass of `pydantic_ai.capabilities.AbstractCap
 | `get_toolset()` | `AgentToolset \| None` | A `FunctionToolset` with tools (local execution) |
 | `get_native_tools()` | `Sequence[AgentNativeTool]` | Provider-native tools (e.g. Anthropic's web search) |
 | `get_instructions()` | `str` or `(RunContext) → str` | A fragment of the system prompt; callable = dynamic per run |
-| `get_model_settings()` | `ModelSettings` or `(RunContext) → ModelSettings` | Per-run model settings (e.g. `reasoning_effort`) |
+| `get_model_settings()` | `ModelSettings` or `(RunContext) → ModelSettings` | Per-run model settings (e.g. `thinking`) |
 | `get_wrapper_toolset(toolset)` | `AbstractToolset \| None` | Intercept *all* tool calls (logging, validation) |
 
 ### Lifecycle hooks (evaluated per run)
@@ -222,7 +222,7 @@ Runtime management is via the `/mcp` command: list servers with their state, or 
 
 ### Tool approval (deferred tools)
 
-A server configured with `require_approval: true` has its tool calls gated behind human approval, built on pydantic-ai 2.9's deferred-tools API. The `Agent` is constructed with `output_type=[str, DeferredToolRequests]`; when the model calls a gated tool the run **ends with a `DeferredToolRequests` output instead of executing it** (a normal turn's output stays a plain `str`).
+A server configured with `require_approval: true` has its tool calls gated behind human approval, built on pydantic-ai's deferred-tools API (2.9+). The `Agent` is constructed with `output_type=[str, DeferredToolRequests]`; when the model calls a gated tool the run **ends with a `DeferredToolRequests` output instead of executing it** (a normal turn's output stays a plain `str`).
 
 `Agent._finalize_run` detects that output and records the pending calls in the session's `pending_approvals` meta (`[{tool_call_id, tool_name, args}]`); `Gateway._worker` then emits an `approval` SSE event. The decision comes back as an ordinary turn — `/approve` or `/deny` (the dashboard's ✅/🚫 buttons send exactly these). `_prepare_run` intercepts them and, via `_prepare_approval_resume`, resumes the deferred run with a `DeferredToolResults` (`True` to approve, `ToolDenied` to deny) and **no new user prompt** (`effective_prompt=None`). Approving executes the tool; denying tells the model it was rejected. A resume can defer again (chained approvals), re-setting `pending_approvals`.
 
@@ -245,7 +245,7 @@ A server configured with `require_approval: true` has its tool calls gated behin
    - Build kwargs: `message_history`, `deps=session_key` (+ `deferred_tool_results` on a resume, + per-run `model` on a live `/model` override).
 5. **LLM run** — `pydantic_ai.Agent.run_stream_events(prompt, message_history=…, deps=…)`.
    - pydantic-ai assembles the system prompt by concatenating each capability's `get_instructions()` contribution.
-   - `SessionThinkingCapability.get_model_settings()` runs; if session meta has `"thinking": "high"`, `reasoning_effort=high` flows into the model request.
+   - `SessionThinkingCapability.get_model_settings()` runs; if session meta has `"thinking": "high"`, `thinking="high"` flows into the model request.
    - Tool calls flow as `FunctionToolCallEvent` → forwarded to the channel as SSE `tool` events. When the session's `verbose` flag is on, `Gateway._worker` also forwards args, `FunctionToolResultEvent` (as `tool_result`, with timing), and `ThinkingPart` deltas (as `thinking`).
    - Text deltas flow as `TextPartDelta` → SSE `chunk` events.
 6. **Post-run** (`Agent._finalize_run`) — `result.all_messages()` saved to disk, session `touch()`ed, `last_system_prompt` cached. If the run ended in a `DeferredToolRequests` (a gated tool awaiting approval), the pending calls are recorded in the `pending_approvals` meta key and the worker emits an `approval` SSE event; otherwise `pending_approvals` is cleared.
@@ -256,7 +256,7 @@ The agent is entered once at gateway startup (`async with self.agent:` in `Gatew
 
 ## Migration Story: pydantic-ai 1.x → 2.0
 
-selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta) reshaped the architecture (the project now tracks **2.9.x**, which added the deferred-tools API that [Tool approval](#tool-approval-deferred-tools) builds on):
+selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta) reshaped the architecture (the project now tracks **2.14.x**, which added the deferred-tools API that [Tool approval](#tool-approval-deferred-tools) builds on):
 
 | Before (1.x) | After (2.0) | Mechanism |
 |---|---|---|

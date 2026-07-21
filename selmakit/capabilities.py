@@ -134,7 +134,7 @@ class SkillsPromptCapability(AbstractCapability[Any]):
 
 @dataclass
 class SessionThinkingCapability(AbstractCapability[str]):
-    """Per-session ``reasoning_effort`` override sourced from the session store.
+    """Per-session ``thinking`` (reasoning effort) override sourced from the session store.
 
     Reads the ``"thinking"`` meta key (set by the ``/think`` slash command)
     from ``session_store`` using the agent's ``deps`` as the session key.
@@ -155,7 +155,7 @@ class SessionThinkingCapability(AbstractCapability[str]):
             session_key = ctx.deps
             thinking = store.get_meta(session_key, "thinking") or default
             if thinking and thinking != "off":
-                return ModelSettings(reasoning_effort=thinking)
+                return ModelSettings(thinking=thinking)
             return ModelSettings()
 
         return _settings

@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.9](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.14](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -63,7 +63,7 @@ gateway.py
   │     │     ├── WorkspacePromptCapability — injects SOUL/IDENTITY/USER/… MD files
   │     │     ├── SkillsPromptCapability    — emits the <available_skills> block
   │     │     ├── RuntimeInfoCapability     — host/os/model/date line
-  │     │     ├── SessionThinkingCapability — per-session reasoning_effort override
+  │     │     ├── SessionThinkingCapability — per-session thinking (reasoning effort) override
   │     │     └── SqliteMemory              — memory_search / memory_write
   │     ├── session_store: JsonlStore       — .selmakit/sessions/
   │     └── heartbeat: ScheduleRunner       — asyncio background task
@@ -259,7 +259,7 @@ The `subagents` section (optional — install the extra with `uv sync --extra su
 
 The `mcp` section attaches external [MCP](https://modelcontextprotocol.io) servers as tools (`McpCapability`, added to the default set when `mcp.enabled` and at least one server is configured). Each entry uses the standard `mcpServers` fields — stdio (`command`/`args`/`env`/`cwd`) or HTTP (`url`/`headers`) — plus selmakit extras: `enabled`, `prefix` (namespace the tool names), `allow_tools` (whitelist), and `require_approval` (gate every call behind human approval — the run defers and you resolve it with `/approve`/`/deny` or the dashboard buttons; unattended heartbeat/cron runs auto-deny). `${VAR}` in `env`/`headers` is expanded from the environment. `examples/weather_mcp.py` is a self-contained reference server (Open-Meteo, no API key). Manage servers at runtime with `/mcp`.
 
-Thinking effort is per session, not per agent. Use `/think low|medium|high|off` in a chat — the value lands in `.meta.json` and `SessionThinkingCapability` reads it from there on each run. On providers that don't support `reasoning_effort` natively, the setting is harmless (ignored).
+Thinking effort is per session, not per agent. Use `/think low|medium|high|off` in a chat — the value lands in `.meta.json` and `SessionThinkingCapability` reads it from there on each run. The value flows into pydantic-ai's unified `thinking` model setting; on providers without thinking support it is harmless (ignored).
 
 ### Model providers
 
@@ -342,7 +342,7 @@ agent = Agent.from_file(state_dir=".selmakit", capabilities=[WebSearch(local="du
 | `SkillsPromptCapability(workspace_dir)` | Emits `<available_skills>` XML + selection rules | dynamic `get_instructions()` |
 | `RuntimeInfoCapability(model_name)` | One-line `host / os / model / date` runtime info; date re-evaluated each run | dynamic `get_instructions()` |
 | `BootstrapCapability(workspace_dir)` | Adds a bootstrap-pending hint while `BOOTSTRAP.md` has non-empty content; emptying or deleting the file silences it on the next turn | dynamic `get_instructions()` |
-| `SessionThinkingCapability(session_store)` | Reads `"thinking"` meta key via `ctx.deps` (= session_key) and sets `reasoning_effort` per run | `get_model_settings()` |
+| `SessionThinkingCapability(session_store)` | Reads `"thinking"` meta key via `ctx.deps` (= session_key) and sets the unified `thinking` setting per run | `get_model_settings()` |
 | `SqliteMemory(workspace_dir, …)` | `memory_search` / `memory_write` toolset + usage instructions | `get_toolset()` + `get_instructions()` |
 
 Writing your own:
@@ -651,7 +651,7 @@ start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.9.1` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.14.1` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `python-telegram-bot` | Telegram channel |
 | `httpx` | Async HTTP client |
