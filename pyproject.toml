@@ -26,7 +26,7 @@ dependencies = [
 # Opt-in sub-agent delegation via pydantic-ai-harness (see subagents in
 # selmakit.json). Install with: uv sync --extra subagents
 subagents = [
-    "pydantic-ai-harness>=0.8.0",
+    "pydantic-ai-harness>=0.9.0",
 ]
 
 [build-system]
