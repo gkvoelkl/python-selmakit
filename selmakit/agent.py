@@ -248,6 +248,16 @@ class Agent:
             return fn
         return decorator
 
+    def output_validator(self, func: Callable) -> Callable:
+        """Passthrough to the inner pydantic-ai ``Agent.output_validator``.
+
+        Registers a post-run validator that sees the run's output (and
+        ``RunContext``) and may raise ``pydantic_ai.ModelRetry`` to force
+        another turn. Applies to final-output validation, so it runs for
+        ``run``, ``run_stream``, and ``run_stream_events`` alike.
+        """
+        return self._agent.output_validator(func)
+
     async def _dispatch_command(self, text: str, session_key: str) -> str | RunPrompt | None:
         parts = text.strip().split(None, 1)
         cmd = parts[0].lower()

@@ -31,6 +31,7 @@ It runs a local Ollama model by default, but the same `model` config knob also d
 | Session persistence + compaction | `JsonlStore` — JSONL per session, auto-compact at 50 messages |
 | Long-term memory | `SqliteMemory` — FTS5 + optional vector search + temporal decay (now an `AbstractCapability`) |
 | Slash commands | `@agent.command("/reset")` decorator |
+| Output validators | `@agent.output_validator` decorator |
 | Scheduled proactive turns | `@agent.schedule(every="30m")` decorator |
 | Workspace identity files | `SOUL.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md` |
 | Skills | `SKILL.md` files — discovered, XML-injected into system prompt |
@@ -403,6 +404,24 @@ async def cmd_theme(ctx: CommandContext) -> str:
 ```
 
 Built-in commands (`/reset`, `/status`, `/compact`, `/model`, `/think`, etc.) are registered via `make_commands(config)` from `selmakit.commands`.
+
+---
+
+### Output Validators
+
+`@agent.output_validator` is a thin passthrough to pydantic-ai's [`Agent.output_validator`](https://ai.pydantic.dev/output/#output-validator-functions) — a post-run hook that inspects the final output and may raise `pydantic_ai.ModelRetry` to force another turn. Use it to bolt a deterministic verification step onto the loop without reaching into the private inner agent (`agent._agent`).
+
+```python
+from pydantic_ai import ModelRetry
+
+@agent.output_validator
+async def gate(ctx, output: str) -> str:
+    if not result_is_plausible(output):
+        raise ModelRetry("Result failed the plausibility check — try again.")
+    return output
+```
+
+Validators run on **final-output** validation, so they fire for `run`, `run_stream`, and `run_stream_events` alike (once per completed turn, not per streamed delta). Purely additive: with no validator registered, nothing changes.
 
 ---
 
