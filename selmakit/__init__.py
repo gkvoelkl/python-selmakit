@@ -17,6 +17,7 @@ from selmakit.message import QueueItem, ReplyHandle
 from selmakit.schedule import ScheduleContext
 from selmakit.session import JsonlStore
 from selmakit.tools import make_filesystem_tools
+from selmakit.validation import run_messages, tool_returns
 
 __all__ = [
     "Agent",
@@ -44,4 +45,6 @@ __all__ = [
     "default_capabilities",
     "make_commands",
     "make_filesystem_tools",
+    "run_messages",
+    "tool_returns",
 ]

@@ -423,6 +423,22 @@ async def gate(ctx, output: str) -> str:
 
 Validators run on **final-output** validation, so they fire for `run`, `run_stream`, and `run_stream_events` alike (once per completed turn, not per streamed delta). Purely additive: with no validator registered, nothing changes.
 
+**Gating on what *this* run produced.** A validator's `ctx.messages` is the whole conversation — earlier runs of the same session plus compaction-summarised history — not a run slice. To inspect only the artefacts the current turn produced, use the run-scoped helpers `run_messages(ctx)` and `tool_returns(ctx)` (importable from the package root). They filter `ctx.messages` by the public `run_id` field — the same basis as pydantic-ai's `AgentRunResult.new_messages()` — so no message-layout reconstruction is needed:
+
+```python
+from selmakit import run_messages, tool_returns
+
+@agent.output_validator
+async def gate(ctx, output: str) -> str:
+    # (tool_name, content) for every tool result emitted this run, in call order
+    for tool_name, content in tool_returns(ctx):
+        if tool_name == "write_file" and not artefact_ok(content):
+            raise ModelRetry(f"{tool_name} produced an invalid artefact — redo it.")
+    return output
+```
+
+`run_messages(ctx)` returns the current run's `ModelMessage`s if you need the full parts. Extracting concrete values (file paths, etc.) from a tool result's `content` stays your job — tool results are application-specific, and selmakit imposes no `output_path` convention.
+
 ---
 
 ### Scheduled Turns
