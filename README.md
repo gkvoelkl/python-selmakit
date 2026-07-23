@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.14](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.16](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -686,7 +686,7 @@ start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.14.1` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.16.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `python-telegram-bot` | Telegram channel |
 | `httpx` | Async HTTP client |
@@ -699,7 +699,7 @@ start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 
 | Extra | Package | Enables |
 |---|---|---|
-| `subagents` | `pydantic-ai-harness>=0.7.0` | Sub-agent delegation (`SubAgents` capability). Install with `uv sync --extra subagents`. |
+| `subagents` | `pydantic-ai-harness>=0.10.0` | Sub-agent delegation (`SubAgents` capability). Install with `uv sync --extra subagents`. |
 
 ---
 

@@ -256,7 +256,7 @@ The agent is entered once at gateway startup (`async with self.agent:` in `Gatew
 
 ## Migration Story: pydantic-ai 1.x → 2.0
 
-selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta) reshaped the architecture (the project now tracks **2.14.x**, which added the deferred-tools API that [Tool approval](#tool-approval-deferred-tools) builds on):
+selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta) reshaped the architecture (the project now tracks **2.16.x**, which added the deferred-tools API that [Tool approval](#tool-approval-deferred-tools) builds on):
 
 | Before (1.x) | After (2.0) | Mechanism |
 |---|---|---|
