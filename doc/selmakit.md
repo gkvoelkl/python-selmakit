@@ -172,7 +172,7 @@ And one **optional** capability borrowed from [pydantic-ai-harness](https://gith
 
 | Capability | Notes |
 |---|---|
-| `SubAgents` (`pydantic_ai_harness.subagents`) | `delegate_task(agent_name, task)` runs a named sub-agent in isolation. Built from the `subagents` config by `build_subagents_capability()` (lazy import), added to `default_capabilities` when enabled. Needs the `subagents` extra. This is the template for adopting further harness capabilities (`shell`, `planning`, richer `compaction`) instead of hand-rolling them. |
+| `SubAgents` (`pydantic_ai_harness.subagents`) | `delegate_task(agent_name, task)` runs a named sub-agent in isolation. Built from the `subagents` config by `build_subagents_capability()` (lazy import), added to `default_capabilities` when enabled. Needs the `subagents` extra. A `subagents.models` menu adds a third `model` argument (enum of the menu keys) so the parent routes each delegation; each option is built via `build_model()` and may carry a `description` and `thinking` level, and `SubAgentConfig.models` restricts which keys a delegate accepts. No menu = the tool keeps its two-argument shape. This is the template for adopting further harness capabilities (`shell`, `planning`, richer `compaction`) instead of hand-rolling them. |
 
 ### Walking the capability tree
 
@@ -256,7 +256,7 @@ The agent is entered once at gateway startup (`async with self.agent:` in `Gatew
 
 ## Migration Story: pydantic-ai 1.x → 2.0
 
-selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta) reshaped the architecture (the project now tracks **2.18.x**, which added the deferred-tools API that [Tool approval](#tool-approval-deferred-tools) builds on):
+selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta) reshaped the architecture (the project now tracks **2.22.x**, which added the deferred-tools API that [Tool approval](#tool-approval-deferred-tools) builds on):
 
 | Before (1.x) | After (2.0) | Mechanism |
 |---|---|---|

@@ -93,6 +93,17 @@ class McpConfig(BaseModel):
     servers: dict[str, McpServerConfig] = {}
 
 
+class SubAgentModelConfig(BaseModel):
+    """One entry on the sub-agent model menu — a model an individual delegation
+    can be routed to, keyed in ``SubAgentsConfig.models`` by the name the parent
+    picks it by. Name the keys for the job (``"fast"``, ``"deep"``) rather than
+    for the vendor: the key and its ``description`` are what the parent routes on.
+    """
+    model: str                    # "provider/model", same syntax as the main model
+    description: str = ""         # routing hint, listed in the prompt next to the key
+    thinking: str | None = None   # reasoning effort for this option (off/low/medium/high)
+
+
 class SubAgentConfig(BaseModel):
     """One delegatable sub-agent. The parent calls it by ``name`` via the
     ``delegate_task`` tool; each run is isolated (never sees the parent chat)."""
@@ -102,11 +113,13 @@ class SubAgentConfig(BaseModel):
     model: str | None = None             # "provider/model"; defaults to the main model
     timeout_seconds: float | None = None  # wall-clock budget per delegation
     max_calls: int | None = None         # tool-call budget per delegation
+    models: list[str] | None = None      # menu keys this delegate accepts; None = all
 
 
 class SubAgentsConfig(BaseModel):
     enabled: bool = False
     agents: list[SubAgentConfig] = []
+    models: dict[str, SubAgentModelConfig] = {}  # routing menu; empty = no per-delegation choice
 
 
 class SelmaKitConfig(BaseModel):

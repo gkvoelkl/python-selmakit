@@ -23,7 +23,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, cast
 
 from pydantic_ai.capabilities import WebFetch, WebSearch
 
@@ -103,9 +103,14 @@ def build_subagents_capability(ctx: GatewayContext) -> Any:
     model + system prompt, plus filesystem/web tools so it can actually do work);
     the parent delegates to it by name via a single ``delegate_task`` tool. The
     harness is imported lazily so it is only required when subagents are enabled.
+
+    When ``subagents.models`` configures a menu, ``delegate_task`` also takes a
+    ``model`` argument (an enum of the menu keys) so the parent routes each task
+    to the model that fits it; a sub-agent's own ``models`` list restricts which
+    keys it accepts. With no menu the tool keeps exactly the shape it had before.
     """
     try:
-        from pydantic_ai_harness.subagents import SubAgent, SubAgents
+        from pydantic_ai_harness.subagents import ModelOption, SubAgent, SubAgents
     except ImportError as e:  # pragma: no cover
         raise ImportError(
             "subagents needs the 'pydantic-ai-harness' package. Install the extra: "
@@ -114,6 +119,7 @@ def build_subagents_capability(ctx: GatewayContext) -> Any:
 
     from pydantic_ai import Agent as PydanticAgent
     from pydantic_ai.capabilities import WebFetch, WebSearch
+    from pydantic_ai.settings import ModelSettings
 
     from selmakit.config import build_model
 
@@ -125,9 +131,32 @@ def build_subagents_capability(ctx: GatewayContext) -> Any:
             WebFetch(local=True),
         ]
 
+    built: dict[str, Any] = {}
+
+    def _model_for(name: str) -> Any:
+        # A "provider/model" string goes through build_model so it inherits the
+        # main model's credentials/base_url; identical strings share one instance.
+        if name not in built:
+            built[name] = build_model(ctx.config.model.model_copy(update={"model": name}))
+        return built[name]
+
+    def _menu_settings(thinking: str | None) -> Any:
+        # `thinking` is a free string in the config (as everywhere else in
+        # selmakit); pydantic-ai narrows it to a Literal at the type level only.
+        return ModelSettings(thinking=cast(Any, thinking)) if thinking and thinking != "off" else None
+
+    menu = {
+        key: ModelOption(
+            model=_model_for(opt.model),
+            description=opt.description or None,
+            settings=_menu_settings(opt.thinking),
+        )
+        for key, opt in ctx.config.subagents.models.items()
+    }
+
     entries = []
     for sa in ctx.config.subagents.agents:
-        model = build_model(ctx.config.model.model_copy(update={"model": sa.model})) if sa.model else ctx.model
+        model = _model_for(sa.model) if sa.model else ctx.model
         pai = PydanticAgent(
             model,
             deps_type=str,
@@ -140,8 +169,9 @@ def build_subagents_capability(ctx: GatewayContext) -> Any:
             description=sa.description,
             timeout_seconds=sa.timeout_seconds,
             max_calls=sa.max_calls,
+            models=sa.models,
         ))
-    return SubAgents(agents=entries, agent_folders=None)
+    return SubAgents(agents=entries, models=menu, agent_folders=None)
 
 
 class Gateway:

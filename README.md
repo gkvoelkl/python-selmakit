@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.18](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.22](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -243,6 +243,17 @@ The root `gateway.py` and `dashboard.py` in this repo are exactly such reference
   },
   "subagents": {
     "enabled": true,
+    "models": {
+      "fast": {
+        "model": "ollama/llama3.2",
+        "description": "quick lookups and short answers"
+      },
+      "deep": {
+        "model": "anthropic/claude-opus-4-8",
+        "description": "hard reasoning, multi-file work",
+        "thinking": "high"
+      }
+    },
     "agents": [
       {
         "name": "researcher",
@@ -250,6 +261,12 @@ The root `gateway.py` and `dashboard.py` in this repo are exactly such reference
         "system_prompt": "You are a research assistant. Use web tools, check multiple sources, answer concisely.",
         "max_calls": 8,
         "timeout_seconds": 120
+      },
+      {
+        "name": "coder",
+        "description": "Writes and reviews code.",
+        "system_prompt": "You write code. Be precise.",
+        "models": ["deep"]
       }
     ]
   }
@@ -257,6 +274,8 @@ The root `gateway.py` and `dashboard.py` in this repo are exactly such reference
 ```
 
 The `subagents` section (optional — install the extra with `uv sync --extra subagents`) enables **task delegation** via the `SubAgents` capability from [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness). Each entry becomes an isolated sub-agent (its own `system_prompt`, optional `model`, plus filesystem + web tools) that the main agent invokes by `name` through a single `delegate_task(agent_name, task)` tool; `max_calls`/`timeout_seconds` bound each delegation. Sub-agents never see the parent conversation. Added to the default capabilities when `subagents.enabled` and at least one agent is configured.
+
+`subagents.models` is an optional **routing menu**: named model options the parent can send an individual delegation to. Each key maps to a `model` (the same `provider/model` syntax as the main model, built through `build_model()` so it inherits the configured credentials/`base_url`), a `description` (the routing hint listed in the system prompt), and an optional `thinking` level applied to that option's runs. With a menu configured, `delegate_task` gains a `model` argument constrained to the menu keys, so the agent routes on task difficulty — name the keys for the job (`fast`, `deep`), not for the vendor. A sub-agent's own `models` list restricts which keys it accepts (`"models": ["deep"]` pins the `coder` above to the deep option); omit it to allow the whole menu. Leave `models` out entirely and nothing changes — `delegate_task` keeps its old two-argument shape and every delegation runs on the sub-agent's own model.
 
 The `mcp` section attaches external [MCP](https://modelcontextprotocol.io) servers as tools (`McpCapability`, added to the default set when `mcp.enabled` and at least one server is configured). Each entry uses the standard `mcpServers` fields — stdio (`command`/`args`/`env`/`cwd`) or HTTP (`url`/`headers`) — plus selmakit extras: `enabled`, `prefix` (namespace the tool names), `allow_tools` (whitelist), and `require_approval` (gate every call behind human approval — the run defers and you resolve it with `/approve`/`/deny` or the dashboard buttons; unattended heartbeat/cron runs auto-deny). `${VAR}` in `env`/`headers` is expanded from the environment. `examples/weather_mcp.py` is a self-contained reference server (Open-Meteo, no API key). Manage servers at runtime with `/mcp`.
 
@@ -338,7 +357,7 @@ agent = Agent.from_file(state_dir=".selmakit", capabilities=[WebSearch(local="du
 | `FilesystemCapability(cwd)` | `read`/`write`/`edit`/`ls`/`grep`/`find` toolset bound to `cwd` | `get_toolset()` |
 | `WebSearch(local=...)` / `WebFetch(local=...)` | Native server-side on supporting providers, DuckDuckGo / markdownify fallback otherwise | `get_native_tools()` |
 | `McpCapability(servers)` | One `MCPToolset` per configured MCP server (stdio/HTTP), merged into a `CombinedToolset`; optional `prefix`/`allow_tools`/`require_approval` | `get_toolset()` |
-| `SubAgents(agents=...)` (harness) | `delegate_task` tool that runs a named sub-agent in isolation; from `pydantic-ai-harness` (optional `subagents` extra) | `get_toolset()` |
+| `SubAgents(agents=..., models=...)` (harness) | `delegate_task` tool that runs a named sub-agent in isolation, with an optional per-delegation model menu; from `pydantic-ai-harness` (optional `subagents` extra) | `get_toolset()` |
 | `WorkspacePromptCapability(workspace_dir)` | Injects all `*.md` files from the workspace under `## Workspace Files` | dynamic `get_instructions()` |
 | `SkillsPromptCapability(workspace_dir)` | Emits `<available_skills>` XML + selection rules | dynamic `get_instructions()` |
 | `RuntimeInfoCapability(model_name)` | One-line `host / os / model / date` runtime info; date re-evaluated each run | dynamic `get_instructions()` |
@@ -686,7 +705,7 @@ start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.18.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.22.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `python-telegram-bot` | Telegram channel |
 | `httpx` | Async HTTP client |
@@ -699,7 +718,7 @@ start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 
 | Extra | Package | Enables |
 |---|---|---|
-| `subagents` | `pydantic-ai-harness>=0.11.0` | Sub-agent delegation (`SubAgents` capability). Install with `uv sync --extra subagents`. |
+| `subagents` | `pydantic-ai-harness>=0.15.0` | Sub-agent delegation (`SubAgents` capability). Install with `uv sync --extra subagents`. |
 
 ---
 
