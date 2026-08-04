@@ -19,17 +19,18 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # Phoenix runs as a standalone container, not as a Python dependency: the
-# arize-phoenix package pins pydantic-ai-slim<2 and crashes under pydantic-ai
-# 2.x. The container exposes the UI (6006) and the OTLP/gRPC endpoint (4317)
-# that selmakit/tracing.py exports spans to.
+# arize-phoenix package is the full Phoenix server and would drag ~43 extra
+# packages into the agent venv.
+# The container exposes the UI and the OTLP/HTTP collector on the same port
+# (6006, path /v1/traces) that selmakit/tracing.py exports spans to.
 # A failure here (docker CLI present but daemon not running, image pull error,
 # port already bound, …) must not abort the script — Phoenix is optional and the
 # gateway runs fine without tracing.
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    echo "Starting Phoenix container (UI: http://localhost:6006, OTLP: localhost:4317)..."
+    echo "Starting Phoenix container (UI + OTLP/HTTP: http://localhost:6006)..."
     docker rm -f "$PHOENIX_CONTAINER" >/dev/null 2>&1 || true
     if ! docker run -d --rm --name "$PHOENIX_CONTAINER" \
-        -p 6006:6006 -p 4317:4317 \
+        -p 6006:6006 \
         arizephoenix/phoenix:latest >/dev/null; then
         echo "WARNING: failed to start Phoenix container — continuing without tracing."
     fi

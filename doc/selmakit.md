@@ -256,7 +256,7 @@ The agent is entered once at gateway startup (`async with self.agent:` in `Gatew
 
 ## Migration Story: pydantic-ai 1.x → 2.0
 
-selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta) reshaped the architecture (the project now tracks **2.22.x**, which added the deferred-tools API that [Tool approval](#tool-approval-deferred-tools) builds on):
+selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta) reshaped the architecture (the project now tracks **2.23.x**; 2.22 added the deferred-tools API that [Tool approval](#tool-approval-deferred-tools) builds on):
 
 | Before (1.x) | After (2.0) | Mechanism |
 |---|---|---|
@@ -272,7 +272,7 @@ Roughly 150 lines of selmakit code were deleted; in exchange, capabilities make 
 
 ### Known incompatibility: Phoenix tracing
 
-`arize-phoenix` pins `pydantic-ai-slim<2` (still true on the latest 17.x), so installing it in the same venv would crash on import under pydantic-ai 2.x. It is therefore deliberately **not** a Python dependency of selmakit — Phoenix runs as a standalone Docker container and selmakit talks to it purely over the OTLP endpoint. `selmakit/tracing.py` sets up the OTel SDK directly and skips instrumentation with a warning if the OTel exporter is missing; the gateway runs unaffected either way.
+`arize-phoenix` is the full Phoenix server (~43 extra packages), so installing it in the same venv would bloat it under pydantic-ai 2.x. It is therefore deliberately **not** a Python dependency of selmakit — Phoenix runs as a standalone Docker container and selmakit talks to it purely over the OTLP endpoint. `selmakit/tracing.py` sets up the OTel SDK directly and skips instrumentation with a warning if the OTel exporter is missing; the gateway runs unaffected either way.
 
 ### Breaking changes worth knowing
 
@@ -355,7 +355,9 @@ The dashboard polls this endpoint to surface proactive turns from the heartbeat 
 selmakit/
   __init__.py           — public exports
   agent.py              — selmakit.Agent (thin wrapper around pydantic_ai.Agent)
+  cli.py                — `selmakit` console command: init / gateway / dashboard
   gateway.py            — Gateway composition root + GatewayContext + default_capabilities()
+  init.py               — initializes .selmakit/ structure, config, and workspace files
   capabilities.py       — Filesystem/Workspace/Skills/Runtime/Bootstrap/SessionThinking/Mcp capabilities
   commands.py           — slash-command handlers + CommandContext + SessionProxy
   config.py             — SelmaKitConfig (Pydantic) + load_config() with 120s cache
@@ -376,12 +378,12 @@ selmakit/
     __init__.py         — exports run() + DashboardConfig
     app.py              — reusable Streamlit app: run(title=, image=, input_placeholder=, …)
     config.py           — DashboardConfig (branding + gateway_base_url)
+    _entry.py           — script `selmakit dashboard` hands to `streamlit run`
 
 examples/
   weather_mcp.py        — self-contained reference MCP server (Open-Meteo) for the MCP client
 gateway.py              — reference entry point: Gateway.from_config().run()
 dashboard.py            — reference entry point: selmakit.dashboard.run(...)
-setup.py                — initializes .selmakit/ structure on first run
 start.sh                — boots Phoenix + gateway + dashboard
 ```
 

@@ -1,6 +1,6 @@
 # selmakit
 
-![selmakit](images/selmakit.png)
+![selmakit](https://raw.githubusercontent.com/gkvoelkl/python-selmakit/main/images/selmakit.png)
 
 **Question: Is it possible to rebuild OpenClaw with Pydantic-AI?**
 
@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.22](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.23](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -44,7 +44,7 @@ It runs a local Ollama model by default, but the same `model` config knob also d
 | Per-session thinking | `SessionThinkingCapability` — `/think high` writes to session meta, capability picks it up |
 | Live model switching | Per-session `model_override` via `/model` or the dashboard selector — takes effect next turn, no restart |
 | Verbose mode | `/verbose on` streams tool calls/results/timing and reasoning deltas into a collapsible dashboard panel |
-| OpenTelemetry tracing | `pydantic_ai.Agent.instrument_all()` exporting OTLP/gRPC to a standalone Phoenix container (`arize-phoenix` is not a Python dependency — it pins pydantic-ai-slim<2) |
+| OpenTelemetry tracing | Logfire SDK as a local OTel client (`send_to_logfire=False`), exporting OTLP/HTTP to a standalone Phoenix container |
 | Streamlit dashboard | `selmakit.dashboard.run(title=, image=, input_placeholder=)` — brandable SSE chat + heartbeat alerts |
 | Reusable runtime | `Gateway.from_config(extra_capabilities=[...]).run()` — backend in one line |
 | Config | `selmakit.json` with 120s cache |
@@ -116,10 +116,12 @@ All runtime state lives under `.selmakit/` (configurable):
 git clone https://github.com/gkvoelkl/python-selmakit
 cd python-selmakit
 
-uv sync
+# --extra all pulls in dashboard, Telegram and sub-agents;
+# plain `uv sync` installs the core (agent + WebChat + tracing) only.
+uv sync --extra all
 
 # Initialize directory structure, config, and workspace files
-uv run python setup.py
+uv run selmakit init
 
 cp .env.example .env
 # Edit .env: set TELEGRAM_TOKEN (only needed for Telegram channel)
@@ -137,7 +139,7 @@ Or run components individually:
 ```bash
 uv run python gateway.py           # gateway only
 uv run streamlit run dashboard.py  # dashboard only
-docker run -d --rm -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:latest  # tracing UI at http://localhost:6006
+docker run -d --rm -p 6006:6006 arizephoenix/phoenix:latest  # tracing UI at http://localhost:6006
 ```
 
 ---
@@ -655,13 +657,20 @@ This keeps context windows manageable without losing important information.
 Phoenix (Arize) is used for OpenTelemetry tracing. Run it as a standalone container:
 
 ```bash
-docker run -d --rm -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:latest
-# UI: http://localhost:6006   OTLP/gRPC: localhost:4317
+docker run -d --rm -p 6006:6006 arizephoenix/phoenix:latest
+# UI: http://localhost:6006   OTLP/HTTP: http://localhost:6006/v1/traces
 ```
 
-`selmakit/tracing.py` builds an OTel `TracerProvider` with an OTLP/gRPC exporter pointed at `localhost:4317` and calls `pydantic_ai.Agent.instrument_all(InstrumentationSettings(tracer_provider=…, include_content=True))`, which instruments all pydantic-ai spans — not just the HTTP layer. If the OTel SDK is missing, tracing is skipped and the gateway runs unaffected.
+`selmakit/tracing.py` is built on the **Logfire SDK**, which ships with `pydantic-ai` — there is nothing extra to install, and tracing works on a core-only install. Logfire is used purely as an OpenTelemetry client: `send_to_logfire=False` means **no data leaves the machine and no Logfire account or token is involved**. Spans are exported over OTLP/HTTP to `http://localhost:6006/v1/traces`; any OTLP/HTTP collector works as a drop-in replacement.
 
-**Why a container?** `arize-phoenix` is **not** a Python dependency of selmakit: it pins `pydantic-ai-slim<2` (true even on the latest 17.x), so installing it in the same venv would crash on import under pydantic-ai 2.x. Running Phoenix in its own container keeps the venv clean while selmakit talks to it purely over the OTLP endpoint. Any OTLP collector on `:4317` works as a drop-in replacement.
+`setup()` turns on two instrumentations:
+
+- `logfire.instrument_pydantic_ai(include_content=True)` — agent runs, model calls and tool execution, with prompt/response content.
+- `logfire.instrument_httpx(...)` (`capture_http=True`, the default) — the raw HTTP request bodies sent to the model provider, i.e. what actually went over the wire. Headers are deliberately **not** captured: they carry the provider API keys.
+
+Pass `capture_http=False` to `setup()` for pydantic-ai spans only.
+
+**Why a container?** `arize-phoenix` is **not** a Python dependency of selmakit: it is the full Phoenix *server*, and installing it drags ~43 packages (boto3, scikit-learn, scipy, SQLAlchemy, strawberry-graphql) into the agent venv. Running it standalone keeps the venv lean while selmakit talks to it purely over OTLP. (Its old `pydantic-ai-slim<2` pin, which used to make co-installation impossible, is gone — 19.x requires `>=2.0.0`.)
 
 ---
 
@@ -681,7 +690,7 @@ selmakit/
   session.py        — JsonlStore
   skills.py         — skill discovery + XML builder
   tools.py          — make_filesystem_tools() (consumed by FilesystemCapability)
-  tracing.py        — OTel setup: OTLP/gRPC export to Phoenix (degrades gracefully if OTel SDK missing)
+  tracing.py        — Logfire SDK as local OTel client: OTLP/HTTP export to Phoenix (degrades gracefully)
   workspace.py      — workspace file loading + bootstrap detection
   channels/
     webchat.py      — WebChatChannel (FastAPI + SSE)
@@ -689,12 +698,14 @@ selmakit/
   dashboard/
     app.py          — reusable Streamlit app: run(title=, image=, input_placeholder=, …)
     config.py       — DashboardConfig
+    _entry.py       — script `selmakit dashboard` hands to `streamlit run`
+  cli.py            — `selmakit` console command: init / gateway / dashboard
+  init.py           — initializes .selmakit/ structure, config, and workspace files
 
 examples/
   weather_mcp.py    — self-contained reference MCP server (Open-Meteo) for the MCP client
 gateway.py          — reference entry point: Gateway.from_config().run()
 dashboard.py        — reference entry point: selmakit.dashboard.run(...)
-setup.py            — initializes .selmakit/ structure, config, and workspace files
 start.sh            — starts Phoenix (Docker) + gateway + dashboard (Linux / macOS)
 start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 ```
@@ -703,22 +714,35 @@ start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
 
 ## Dependencies
 
+The core install is the agent loop plus the WebChat channel, sessions, memory
+and cron — everything only some deployments need is an extra.
+
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.22.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.23.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
-| `python-telegram-bot` | Telegram channel |
 | `httpx` | Async HTTP client |
-| `streamlit` | Dashboard UI |
-| `opentelemetry-sdk` + `opentelemetry-exporter-otlp-proto-grpc` | OpenTelemetry tracing → OTLP/gRPC export (Phoenix runs as a standalone container, not a Python dep — see Tracing section) |
 | `python-dotenv` | `.env` loading |
-| `rich` | Colored terminal output in `setup.py` |
+| `rich` | Colored terminal output in `selmakit init` |
 
 **Optional extras:**
 
 | Extra | Package | Enables |
 |---|---|---|
-| `subagents` | `pydantic-ai-harness>=0.15.0` | Sub-agent delegation (`SubAgents` capability). Install with `uv sync --extra subagents`. |
+| `dashboard` | `streamlit>=1.0` | The Streamlit dashboard (`selmakit.dashboard`, `selmakit dashboard`) |
+| `telegram` | `python-telegram-bot>=22.6` | The Telegram channel (`channels.telegram.enabled`) |
+| `subagents` | `pydantic-ai-harness>=0.16.0` | Sub-agent delegation (`SubAgents` capability) |
+| `all` | all of the above | The batteries-included install `start.sh` assumes |
+
+```bash
+uv sync --extra all          # everything (what start.sh expects)
+pip install selmakit         # core only
+pip install 'selmakit[dashboard,telegram]'
+```
+
+Each extra is imported lazily at its use site, so a core-only install does not
+crash when a feature is switched on without its package — it logs which extra
+to install and carries on (the Telegram channel is skipped, tracing stays off).
 
 ---
 

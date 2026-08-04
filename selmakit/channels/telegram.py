@@ -56,7 +56,10 @@ class TelegramChannel:
         try:
             from telegram.ext import ApplicationBuilder, MessageHandler, filters as tg_filters
         except ImportError:
-            logger.error("python-telegram-bot not installed. Run: pip install python-telegram-bot")
+            logger.error(
+                "Telegram channel enabled but python-telegram-bot is not installed — skipping. "
+                "Install it with: pip install 'selmakit[telegram]'"
+            )
             return
 
         app = ApplicationBuilder().token(self._token).build()

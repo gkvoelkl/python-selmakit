@@ -405,7 +405,7 @@ class Gateway:
 
     async def serve(self) -> None:
         """Start tracing, logging, channels, worker, schedules and cron."""
-        tracing_setup(endpoint="http://localhost:4317")
+        tracing_setup()
         logging.basicConfig(
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             level=logging.INFO,
