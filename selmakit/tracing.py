@@ -32,6 +32,13 @@ def setup(
     opposed to pydantic-ai's own view of the run. Headers are deliberately
     *not* captured: they carry the provider API keys.
 
+    Because the export is local-only, Logfire's value scrubbing is switched off
+    — its patterns (``session`` among them) otherwise blank whole system
+    messages and make the traces useless for prompt debugging. Spans therefore
+    contain prompts, responses and request bodies verbatim; treat the collector
+    as as sensitive as the session files on disk, and re-enable scrubbing if
+    you point ``endpoint`` at anything remote.
+
     If the dependencies are missing, tracing is skipped and a warning is logged
     — the gateway continues without tracing.
     """
@@ -59,6 +66,15 @@ def setup(
         # introspection — it warns noisily whenever source is unavailable
         # (interactive shells, exec(), .pyc without .py).
         inspect_arguments=False,
+        # Logfire's default scrubber blanks a whole value when it matches one of
+        # its patterns — and "session" is one of them, which wipes the entire
+        # workspace-files system message (SOUL.md says "Every session you start
+        # fresh"). That guts exactly what these traces are for. Turning it off
+        # is defensible *because this export is local-only*: send_to_logfire is
+        # False, the collector is on localhost, and headers (which carry the
+        # provider API keys) are never captured. Re-enable it if you ever point
+        # `endpoint` at a remote collector or at Logfire's hosted backend.
+        scrubbing=False,
         additional_span_processors=[
             BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
         ],

@@ -1,0 +1,110 @@
+name: Release
+
+# Publishing uses PyPI Trusted Publishing (OIDC) — no API token is stored in
+# the repository. Each target index needs a matching Pending Publisher on
+# PyPI/TestPyPI (owner: gkvoelkl, repo: python-selmakit, workflow: release.yml,
+# environment: pypi / testpypi) plus a GitHub Environment of the same name.
+#
+#   Dry run  : Actions → Release → Run workflow → target = testpypi
+#   Release  : git tag v0.1.23 && git push origin v0.1.23
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Index to publish to"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # actions/checkout; the top-level default grants nothing
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          version="$(uv version --short)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "pyproject version: $version"
+
+      - name: Tag must match pyproject version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $VERSION"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches pyproject version $VERSION"
+
+      # Builds the sdist, then builds the wheel *from that sdist* — so a file
+      # missing from the sdist fails here rather than after publishing.
+      - name: Build
+        run: uv build
+
+      - name: Check metadata renders on PyPI
+        run: uvx twine check dist/*
+
+      - name: Smoke-test the wheel
+        run: |
+          uv venv --python 3.11 /tmp/smoke
+          VIRTUAL_ENV=/tmp/smoke uv pip install dist/*.whl
+          /tmp/smoke/bin/python -c "import selmakit; print('import ok:', len(selmakit.__all__), 'exports')"
+          /tmp/smoke/bin/selmakit --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  testpypi:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/selmakit/
+    permissions:
+      id-token: write   # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/selmakit/
+    permissions:
+      id-token: write   # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
