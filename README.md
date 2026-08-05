@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.23](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.24](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -719,7 +719,7 @@ and cron — everything only some deployments need is an extra.
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.23.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.24.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `httpx` | Async HTTP client |
 | `python-dotenv` | `.env` loading |
@@ -731,7 +731,7 @@ and cron — everything only some deployments need is an extra.
 |---|---|---|
 | `dashboard` | `streamlit>=1.0` | The Streamlit dashboard (`selmakit.dashboard`, `selmakit dashboard`) |
 | `telegram` | `python-telegram-bot>=22.6` | The Telegram channel (`channels.telegram.enabled`) |
-| `subagents` | `pydantic-ai-harness>=0.16.0` | Sub-agent delegation (`SubAgents` capability) |
+| `subagents` | `pydantic-ai-harness>=0.17.0` | Sub-agent delegation (`SubAgents` capability) |
 | `all` | all of the above | The batteries-included install `start.sh` assumes |
 
 ```bash
