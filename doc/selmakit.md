@@ -385,6 +385,7 @@ examples/
 gateway.py              — reference entry point: Gateway.from_config().run()
 dashboard.py            — reference entry point: selmakit.dashboard.run(...)
 start.sh                — boots Phoenix + gateway + dashboard
+CHANGELOG.md            — notable changes per release
 ```
 
 The framework code, including the `Gateway` runtime and the reusable dashboard, lives entirely under `selmakit/`. The top-level `gateway.py` and `dashboard.py` are thin reference entry points (a handful of lines each) — Selma is built with them.

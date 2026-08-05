@@ -21,6 +21,13 @@ selmakit     →  channels, sessions, commands, memory, skills, scheduling
 
 It runs a local Ollama model by default, but the same `model` config knob also drives hosted OpenAI, Anthropic (Claude), and Google (Gemini) models — see [Model providers](#model-providers). It serves a web chat UI via SSE, connects to Telegram, persists sessions, and routes skills — all wired up by a reusable `Gateway`, so your own agent is just a few lines.
 
+```bash
+pip install selmakit
+```
+
+Released versions and what changed in each are listed in the
+[changelog](https://github.com/gkvoelkl/python-selmakit/blob/main/CHANGELOG.md).
+
 ---
 
 ## Features at a Glance
@@ -708,6 +715,7 @@ gateway.py          — reference entry point: Gateway.from_config().run()
 dashboard.py        — reference entry point: selmakit.dashboard.run(...)
 start.sh            — starts Phoenix (Docker) + gateway + dashboard (Linux / macOS)
 start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
+CHANGELOG.md        — notable changes per release
 ```
 
 ---
