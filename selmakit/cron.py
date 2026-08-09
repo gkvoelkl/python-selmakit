@@ -239,7 +239,10 @@ def _format_jobs(jobs: list[CronJob]) -> str:
         return "No active cron jobs."
     lines = []
     for j in active:
-        schedule = f"at {j.at.isoformat()}" if j.kind == "at" else f"every {j.every}"
+        if j.kind == "at":
+            schedule = f"at {j.at.isoformat()}" if j.at else "at <unknown>"
+        else:
+            schedule = f"every {j.every}"
         next_run = j.next_run_at.strftime("%Y-%m-%d %H:%M")
         lines.append(f"• `{j.id}` — {schedule} — next: {next_run}\n  {j.prompt}")
     return "\n".join(lines)

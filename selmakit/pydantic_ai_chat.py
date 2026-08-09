@@ -1,6 +1,7 @@
 import asyncio
 
 from pydantic_ai import Agent
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -11,7 +12,7 @@ BASE_URL = "http://localhost:11434/v1"
 async def main() -> None:
     model = OpenAIChatModel(MODEL, provider=OpenAIProvider(base_url=BASE_URL))
     agent = Agent(model=model)
-    history = []
+    history: list[ModelMessage] = []
 
     print(f"Chat with {MODEL} (Ctrl+C or /quit to exit)\n")
 

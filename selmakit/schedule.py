@@ -4,10 +4,15 @@ import asyncio
 import logging
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, time as dtime
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from selmakit.agent import Agent
 
 logger = logging.getLogger(__name__)
 
@@ -134,12 +139,15 @@ def is_silent_ack(text: str, max_chars: int = 300) -> bool:
     return not cleaned or len(cleaned) <= max_chars
 
 
+ScheduleHandler = Callable[[ScheduleContext], Awaitable[str | None]]
+
+
 class ScheduleRunner:
     def __init__(
         self,
-        handler: any,
+        handler: ScheduleHandler,
         cfg: ScheduleConfig,
-        agent: any,
+        agent: Agent,
         alerts: asyncio.Queue,
     ):
         self._handler = handler

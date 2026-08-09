@@ -1,6 +1,6 @@
 [project]
 name = "selmakit"
-version = "0.1.24"
+version = "0.1.25"
 description = "Minimal multi-channel agent framework built on pydantic-ai"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,7 +37,7 @@ dependencies = [
     # (Its old `pydantic-ai-slim<2` pin is gone: 19.x requires >=2.0.0.)
     "fastapi>=0.135.1",
     "pydantic>=2.12.5",
-    "pydantic-ai[duckduckgo,web-fetch]>=2.24.0",
+    "pydantic-ai[duckduckgo,web-fetch]>=2.27.0",
     "python-dotenv>=1.0",
     "rich>=13.0",
     "httpx>=0.27",
@@ -60,7 +60,7 @@ telegram = [
 # Opt-in sub-agent delegation via pydantic-ai-harness (see subagents in
 # selmakit.json). Install with: uv sync --extra subagents
 subagents = [
-    "pydantic-ai-harness>=0.17.0",
+    "pydantic-ai-harness>=0.18.0",
 ]
 # Everything — the batteries-included install the repo's start.sh assumes.
 all = [
