@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.25] — 2026-08-09
+
+### Added
+
+- This changelog, linked from the README and `doc/selmakit.md`.
+
+### Changed
+
+- Require `pydantic-ai >= 2.27.0` (from 2.24.0). Notable in the range:
+  `run_stream_events()` became the public `AgentRunEvents` API — selmakit's
+  `Agent.run_stream_events()` already builds on it, now on supported ground —
+  plus run cancellation via `AgentRun.cancel()`, deferred tool revelation over
+  native provider channels, a Snowflake Cortex model/provider, and fixes to
+  Anthropic/OpenAI compaction and OpenTelemetry serialization.
+- Require `pydantic-ai-harness >= 0.18.0` for the `subagents` extra, which adds
+  delegation of open-ended web tasks to a browser-use agent.
+
+### Fixed
+
+- **`ScheduleRunner` was annotated with the builtin `any`, not `typing.Any`**
+  (`schedule.py`), so `handler` and `agent` were typed as a function object and
+  every use of the agent inside the run loop — `workspace_dir`, `run_stream`,
+  calling the handler — was a type error. Both now carry real types: a
+  `ScheduleHandler` callable alias and `Agent` under `TYPE_CHECKING`.
+- `_format_jobs` called `.isoformat()` on `CronJob.at`, which is `datetime |
+  None`, guarded only by `kind == "at"` (`cron.py`). Now guarded on the field
+  itself, with a fallback for a job whose `at` is missing.
+- Annotated the `history` list in `pydantic_ai_chat.py`.
+- With those three, `mypy selmakit/` reports no issues.
+
 ## [0.1.24] — 2026-08-05
 
 ### Changed
@@ -78,6 +108,7 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
-[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.24...HEAD
+[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.25...HEAD
+[0.1.25]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.24...v0.1.25
 [0.1.24]: https://github.com/gkvoelkl/python-selmakit/compare/74784ca...v0.1.24
 [0.1.23]: https://github.com/gkvoelkl/python-selmakit/commit/74784ca
