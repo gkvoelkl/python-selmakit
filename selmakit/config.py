@@ -93,6 +93,19 @@ class McpConfig(BaseModel):
     servers: dict[str, McpServerConfig] = {}
 
 
+class TracingConfig(BaseModel):
+    """OpenTelemetry export, off unless you point it at a collector.
+
+    Any OTLP/HTTP collector works; ``endpoint`` defaults to the conventional
+    OTLP/HTTP port. Disabled by default so a gateway with no collector running
+    does not spend every turn retrying a refused connection.
+    """
+    enabled: bool = False
+    endpoint: str = "http://localhost:4318/v1/traces"
+    project_name: str = "selmakit"   # exported as the OTel service name
+    capture_http: bool = True        # also record raw provider request/response bodies
+
+
 class SubAgentModelConfig(BaseModel):
     """One entry on the sub-agent model menu — a model an individual delegation
     can be routed to, keyed in ``SubAgentsConfig.models`` by the name the parent
@@ -130,6 +143,7 @@ class SelmaKitConfig(BaseModel):
     heartbeat: HeartbeatConfig = HeartbeatConfig()
     mcp: McpConfig = McpConfig()
     subagents: SubAgentsConfig = SubAgentsConfig()
+    tracing: TracingConfig = TracingConfig()
 
 
 def build_model(cfg: ModelConfig):

@@ -35,11 +35,14 @@ Any string is valid; it becomes the filename stem, so keep it filesystem-safe.
 Serialized with a pydantic `TypeAdapter(list[ModelMessage])` — i.e. the exact
 pydantic-ai message objects (`ModelRequest` / `ModelResponse` and their parts).
 
-**The rendered system prompt is *not* stored here.** pydantic-ai attaches the
-assembled instructions only to the latest `ModelRequest` in memory, and selmakit
-does not keep them in the persisted history — it would bloat every saved file
-with a re-derivable block. See [`last_system_prompt`](#last_system_prompt) for
-how the prompt is captured instead.
+**The rendered system prompt *is* stored here**, on every `ModelRequest` that
+carries one. `save()` writes `all_messages()` verbatim, so each request repeats
+the full assembled instructions block (workspace files, skills, runtime info —
+easily several KB). Nothing strips it. Expect session files to grow accordingly
+until auto-compaction replaces the history. The same string is *also*
+cached in the metadata as [`last_system_prompt`](#last_system_prompt), which is
+what `/systemprompt` reads — the meta copy is the supported accessor, not the
+per-message ones.
 
 Lifecycle:
 
@@ -58,7 +61,7 @@ A flat JSON object. Missing file → treated as `{}`. Known keys:
 | `verbose` | bool | `/verbose on\|off` command | `Gateway._worker`, `/status` | When true, the webchat stream surfaces tool calls (`→ name(args)`), results (`← name: …`), tool errors, per-tool timing and reasoning deltas. Absent ⇒ off. |
 | `pending_approvals` | list of `{tool_call_id, tool_name, args}` \| null | `Agent._finalize_run` (set when a turn defers, cleared otherwise) | `Gateway._worker` (emits `approval` event), `Agent._prepare_approval_resume`, `/status` | Gated MCP tool calls awaiting `/approve` or `/deny`. Present ⇒ the last turn ended in a `DeferredToolRequests`. See CLAUDE.md "Tool approval". |
 | `last_system_prompt` | string | after each **user** turn | `/systemprompt`, `Agent.last_system_prompt()` | The instructions string as last actually sent to the model. |
-| `model_override` | string | `/model <name>` | `/model`, `/status` | Recorded/displayed per session. **Note:** not currently consumed by the run loop — model dispatch still uses the configured model. |
+| `model_override` | string | `/model <name>`, dashboard model selector | `Agent._resolve_run_model()`, `/model`, `/status` | Per-session live model switch. Consumed by the run loop: `_prepare_run` passes the built model as pydantic-ai's per-run `model=`. Interactive turns only — heartbeat/cron/compaction runs always use the base model. See CLAUDE.md "Live model switching". |
 | `session_type` | `user`/`schedule` | schedule runner (sets `schedule` on isolated sessions) | `list_sessions()`, cron/schedule targeting | Distinguishes user chats from scheduled/heartbeat sessions. Defaults to `user` when absent. |
 
 Metadata is a plain dict — custom slash commands may add their own keys via

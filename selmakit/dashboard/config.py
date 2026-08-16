@@ -20,6 +20,9 @@ class DashboardConfig:
     show_settings: bool = True                         # show the selmakit.json editor in the sidebar
     config_file: str = ".selmakit/selmakit.json"       # file edited by the settings dialog
     stream_timeout: float | None = 120.0               # httpx read timeout (s) for the SSE stream; None disables it for long-running QGIS/STAC turns
+    state_dir: str | None = None                       # .selmakit root; defaults to the config file's directory
+    show_view_switch: bool = True                      # sidebar Chat/Transcript switch
+    default_view: str = "Chat"                         # initial view: "Chat" or "Transcript"
 
     @property
     def stream_url(self) -> str:
@@ -28,3 +31,10 @@ class DashboardConfig:
     @property
     def heartbeat_poll_url(self) -> str:
         return f"{self.gateway_base_url.rstrip('/')}/webchat/heartbeat/poll"
+
+    @property
+    def sessions_dir(self) -> str:
+        """Directory holding ``<session_key>.json`` — the transcript view's source."""
+        from selmakit.dashboard.transcript import sessions_dir_for
+
+        return sessions_dir_for(self.config_file, self.state_dir)

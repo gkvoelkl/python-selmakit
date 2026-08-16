@@ -23,18 +23,20 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Sequence, cast
 
 from pydantic_ai.capabilities import WebFetch, WebSearch
+from pydantic_ai.common_tools.web_fetch import web_fetch_tool
+from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.skills import Skills
 
 from selmakit.agent import Agent
 from selmakit.capabilities import (
     BootstrapCapability,
-    FilesystemCapability,
     McpCapability,
     RuntimeInfoCapability,
     SessionThinkingCapability,
-    SkillsPromptCapability,
     WorkspacePromptCapability,
 )
 from selmakit.channels.telegram import TelegramChannel
@@ -70,18 +72,50 @@ class GatewayContext:
     cron_store: CronStore
 
 
+def local_web_fetch() -> WebFetch:
+    """``WebFetch`` whose local fallback may reach private/loopback addresses.
+
+    pydantic-ai's local `web_fetch` refuses private and loopback IPs by default
+    (SSRF protection). selmakit's own services live exactly there — Ollama on
+    :11434, the gateway on :8000 — so skills that health-check them need the
+    guard lifted. Keep this in mind for any deployment where the agent handles
+    untrusted input: it can then reach services on the host and LAN.
+    """
+    return WebFetch(local=web_fetch_tool(allow_local_urls=True))
+
+
+def build_skills_capability(workspace_dir: str) -> Any | None:
+    """The harness ``Skills`` capability over ``<workspace>/skills/``, or None.
+
+    Each ``<skill>/SKILL.md`` becomes a *deferred* capability: only its name and
+    description sit in the prompt, and the model pulls the body in on demand via
+    the ``load_capability`` tool. ``Skills`` scans at construction and raises on
+    a missing directory, so an agent whose workspace has no skills folder gets
+    no capability at all rather than a crash.
+    """
+    skills_dir = Path(workspace_dir) / "skills"
+    if not skills_dir.is_dir() or not any(skills_dir.glob("*/SKILL.md")):
+        return None
+    return Skills(skills_dir)
+
+
 def default_capabilities(ctx: GatewayContext) -> list[Any]:
     """The standard selmakit capability set, wired from ``ctx``.
 
     Mirror of the list the old top-level ``gateway.py`` constructed inline.
     """
     caps = [
-        FilesystemCapability(cwd="."),
+        # Sandboxed to the state directory: absolute paths, `~` and `../`
+        # escapes are rejected, symlinks resolved before authorization.
+        # Rooted at `.selmakit` rather than the project because the harness
+        # walkers (list_directory/search_files/find_files) skip every path with
+        # a dot-prefixed component — from the project root the whole state
+        # directory would silently list as empty.
+        FileSystem(root_dir=ctx.state_dir),
         WebSearch(local="duckduckgo"),
-        WebFetch(local=True),
+        local_web_fetch(),
         BootstrapCapability(workspace_dir=ctx.workspace_dir),
         WorkspacePromptCapability(workspace_dir=ctx.workspace_dir),
-        SkillsPromptCapability(workspace_dir=ctx.workspace_dir),
         RuntimeInfoCapability(model_name=ctx.model_name),
         SessionThinkingCapability(
             session_store=ctx.session_store,
@@ -89,6 +123,9 @@ def default_capabilities(ctx: GatewayContext) -> list[Any]:
         ),
         CronCapability(store=ctx.cron_store),
     ]
+    skills = build_skills_capability(ctx.workspace_dir)
+    if skills is not None:
+        caps.append(skills)
     if ctx.config.mcp.enabled and ctx.config.mcp.servers:
         caps.append(McpCapability(servers=ctx.config.mcp.servers))
     if ctx.config.subagents.enabled and ctx.config.subagents.agents:
@@ -102,20 +139,15 @@ def build_subagents_capability(ctx: GatewayContext) -> Any:
     Each configured sub-agent becomes an isolated pydantic-ai agent (its own
     model + system prompt, plus filesystem/web tools so it can actually do work);
     the parent delegates to it by name via a single ``delegate_task`` tool. The
-    harness is imported lazily so it is only required when subagents are enabled.
+    harness is a core dependency (the default capability set already uses its
+    FileSystem and Skills), so this import cannot fail on a supported install.
 
     When ``subagents.models`` configures a menu, ``delegate_task`` also takes a
     ``model`` argument (an enum of the menu keys) so the parent routes each task
     to the model that fits it; a sub-agent's own ``models`` list restricts which
     keys it accepts. With no menu the tool keeps exactly the shape it had before.
     """
-    try:
-        from pydantic_ai_harness.subagents import ModelOption, SubAgent, SubAgents
-    except ImportError as e:  # pragma: no cover
-        raise ImportError(
-            "subagents needs the 'pydantic-ai-harness' package. Install the extra: "
-            "`uv sync --extra subagents` (or disable subagents in selmakit.json)."
-        ) from e
+    from pydantic_ai_harness.subagents import ModelOption, SubAgent, SubAgents
 
     from pydantic_ai import Agent as PydanticAgent
     from pydantic_ai.capabilities import WebFetch, WebSearch
@@ -124,11 +156,12 @@ def build_subagents_capability(ctx: GatewayContext) -> Any:
     from selmakit.config import build_model
 
     def _worker_caps() -> list[Any]:
-        # Fresh instances per sub-agent — the tools that make a delegate useful.
+        # Fresh instances per sub-agent — the tools that make a delegate useful,
+        # under the same state-directory sandbox as the parent.
         return [
-            FilesystemCapability(cwd="."),
+            FileSystem(root_dir=ctx.state_dir),
             WebSearch(local="duckduckgo"),
-            WebFetch(local=True),
+            local_web_fetch(),
         ]
 
     built: dict[str, Any] = {}
@@ -405,7 +438,14 @@ class Gateway:
 
     async def serve(self) -> None:
         """Start tracing, logging, channels, worker, schedules and cron."""
-        tracing_setup()
+        # Opt-in: with no collector running, an always-on exporter retries every
+        # refused connection and logs an error per turn.
+        if self.config.tracing.enabled:
+            tracing_setup(
+                self.config.tracing.project_name,
+                self.config.tracing.endpoint,
+                capture_http=self.config.tracing.capture_http,
+            )
         logging.basicConfig(
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             level=logging.INFO,

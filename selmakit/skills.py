@@ -67,24 +67,8 @@ def get_skill_path(workspace_dir: str, name: str) -> Path | None:
     return None
 
 
-def build_skills_xml(workspace_dir: str) -> str:
-    """Return an XML block listing all skills found in <workspace>/skills/*/SKILL.md."""
-    files = _find_skill_files(workspace_dir)
-    if not files:
-        return ""
-
-    xml_parts: list[str] = ["<available_skills>"]
-    for path in files:
-        text = path.read_text(encoding="utf-8")
-        fm = _parse_frontmatter(text)
-        name = fm.get("name", path.parent.name)
-        description = fm.get("description", "")
-        xml_parts += [
-            "  <skill>",
-            f"    <name>{name}</name>",
-            f"    <description>{description}</description>",
-            f"    <location>{path}</location>",
-            "  </skill>",
-        ]
-    xml_parts.append("</available_skills>")
-    return "\n".join(xml_parts)
+# Note: the ``<available_skills>`` XML builder that used to live here is gone.
+# Skills reach the model as deferred capabilities via the harness ``Skills``
+# capability (see ``gateway.build_skills_capability``), which does its own
+# scanning. The helpers above remain for the ``/skill`` and ``/skills``
+# commands, which still need to resolve a skill by name off disk.

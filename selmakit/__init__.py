@@ -1,17 +1,20 @@
 from selmakit.agent import Agent
 from selmakit.capabilities import (
     BootstrapCapability,
-    FilesystemCapability,
     HeartbeatCapability,
     RuntimeInfoCapability,
     SessionThinkingCapability,
-    SkillsPromptCapability,
     WorkspacePromptCapability,
 )
 from selmakit.channels import TelegramChannel, WebChatChannel
 from selmakit.commands import CommandContext, RunPrompt, make_commands
 from selmakit.cron import CronCapability, CronService, CronStore
-from selmakit.gateway import Gateway, GatewayContext, default_capabilities
+from selmakit.gateway import (
+    Gateway,
+    GatewayContext,
+    build_skills_capability,
+    default_capabilities,
+)
 from selmakit.memory import SqliteMemory
 from selmakit.message import QueueItem, ReplyHandle
 from selmakit.schedule import ScheduleContext
@@ -26,7 +29,6 @@ __all__ = [
     "CronCapability",
     "CronService",
     "CronStore",
-    "FilesystemCapability",
     "Gateway",
     "GatewayContext",
     "HeartbeatCapability",
@@ -37,11 +39,11 @@ __all__ = [
     "RuntimeInfoCapability",
     "ScheduleContext",
     "SessionThinkingCapability",
-    "SkillsPromptCapability",
     "SqliteMemory",
     "TelegramChannel",
     "WebChatChannel",
     "WorkspacePromptCapability",
+    "build_skills_capability",
     "default_capabilities",
     "make_commands",
     "make_filesystem_tools",

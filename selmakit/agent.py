@@ -552,10 +552,13 @@ class Agent:
             skill_path = get_skill_path(str(self._workspace_dir), skill_name)
             if skill_path is None:
                 return f"Skill `{skill_name}` not found.", "", {}
+            # Skills are deferred capabilities (harness ``Skills``): the body is
+            # not in the prompt until the model pulls it in, so name the loader
+            # explicitly rather than just asking it to "execute" the skill.
             prompt = (
-                f"Execute skill {skill_name}."
-                if not args else
-                f"Execute skill {skill_name}: {args}"
+                f"Load the `{skill_name}` capability with the `load_capability` "
+                f"tool, then carry out its instructions"
+                + (f": {args}" if args else ".")
             )
         elif prompt.startswith("/"):
             result = await self._dispatch_command(prompt, session_key)

@@ -19,8 +19,6 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.toolsets import AgentToolset, FunctionToolset
 
 from selmakit.session import JsonlStore
-from selmakit.skills import build_skills_xml
-from selmakit.tools import make_filesystem_tools
 from selmakit.workspace import detect_bootstrap, load_workspace_files
 
 logger = logging.getLogger(__name__)
@@ -33,18 +31,6 @@ _BOOTSTRAP_INSTRUCTIONS = "\n".join([
     "Your first user-visible reply for a bootstrap-pending workspace must follow "
     "BOOTSTRAP.md, not a generic greeting.",
 ])
-
-
-_SKILLS_USAGE = (
-    "Before replying: scan the `<description>` entries in `<available_skills>`.\n"
-    "- If exactly one skill clearly applies: use `read` to load its SKILL.md at "
-    "`<location>`, then follow it.\n"
-    "- If multiple could apply: choose the most specific one, then read and follow it.\n"
-    "- If none clearly apply: do not read any SKILL.md.\n"
-    "Never read more than one skill per turn. Only read after selecting.\n"
-    "When a skill references a relative path, resolve it against the skill's "
-    "directory (parent of SKILL.md)."
-)
 
 
 @dataclass
@@ -70,21 +56,6 @@ class BootstrapCapability(AbstractCapability[Any]):
 
 
 @dataclass
-class FilesystemCapability(AbstractCapability[Any]):
-    """Provides file-system tools (read, write, edit, ls, grep, find) bound
-    to a working directory.
-
-    All path arguments are resolved relative to ``cwd``. Tools are built
-    once at construction; restart the agent if you change ``cwd``.
-    """
-
-    cwd: str = "."
-
-    def get_toolset(self) -> AgentToolset[Any] | None:
-        return FunctionToolset(tools=list(make_filesystem_tools(self.cwd)))
-
-
-@dataclass
 class WorkspacePromptCapability(AbstractCapability[Any]):
     """Inject workspace markdown files (SOUL.md, IDENTITY.md, USER.md, …) into
     the agent's instructions as a ``## Workspace Files`` section.
@@ -105,29 +76,6 @@ class WorkspacePromptCapability(AbstractCapability[Any]):
             for f in files:
                 parts += ["", f"### {f.name}", f.content.strip()]
             return "\n".join(parts)
-
-        return _instructions
-
-
-@dataclass
-class SkillsPromptCapability(AbstractCapability[Any]):
-    """Inject the ``<available_skills>`` XML block plus selection rules into
-    the agent's instructions.
-
-    Each subdirectory of ``<workspace_dir>/skills/`` containing a SKILL.md
-    becomes a skill entry. Re-scanned each run.
-    """
-
-    workspace_dir: str
-
-    def get_instructions(self):
-        wd = self.workspace_dir
-
-        def _instructions(ctx: RunContext[Any]) -> str:
-            xml = build_skills_xml(wd)
-            if not xml:
-                return ""
-            return "## Skills\n" + _SKILLS_USAGE + "\n\n" + xml
 
         return _instructions
 
@@ -163,21 +111,31 @@ class SessionThinkingCapability(AbstractCapability[str]):
 
 @dataclass
 class RuntimeInfoCapability(AbstractCapability[Any]):
-    """Inject a one-line runtime info (host, os, arch, model, shell, date)
-    into the agent's instructions.
+    """Inject a one-line runtime info (os, arch, model, shell, date) into the
+    agent's instructions.
 
     Date is re-evaluated each run, so long-lived sessions see the new date
     after midnight without restart.
+
+    The **hostname is deliberately not included**. On a personal machine it
+    usually embeds the account name ("MacBook-Air-von-<user>"), and a model
+    asked "what can be found about me online?" will happily feed that straight
+    into a web search — putting the operator's username in front of a third
+    party. It bought the model nothing in return. Set ``include_host=True`` if
+    you run somewhere the hostname is meaningful and not personally
+    identifying, e.g. a fleet of named servers.
     """
 
     model_name: str = ""
+    include_host: bool = False
 
     def get_instructions(self):
         model = self.model_name
+        include_host = self.include_host
 
         def _instructions(ctx: RunContext[Any]) -> str:
             pairs = [
-                ("host", platform.node()),
+                ("host", platform.node() if include_host else ""),
                 ("os", f"{platform.system()} {platform.release()}"),
                 ("arch", platform.machine()),
                 ("model", model),

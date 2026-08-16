@@ -1,6 +1,6 @@
 [project]
 name = "selmakit"
-version = "0.1.25"
+version = "0.1.26"
 description = "Minimal multi-channel agent framework built on pydantic-ai"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,14 +30,15 @@ classifiers = [
 # only some deployments need is an extra below; each is imported lazily at its
 # use site, so a core-only install degrades with a logged warning, not a crash.
 dependencies = [
-    # arize-phoenix is intentionally NOT a dependency. It is the full Phoenix
-    # *server* — installing it drags in ~43 packages (boto3, scikit-learn,
-    # scipy, SQLAlchemy, strawberry-graphql). Run it standalone (Docker) and
-    # talk to it over OTLP — see start.sh / README.
-    # (Its old `pydantic-ai-slim<2` pin is gone: 19.x requires >=2.0.0.)
+    # No tracing backend is a dependency: selmakit only exports OTLP/HTTP spans
+    # to whatever collector `tracing.endpoint` points at, and only when
+    # `tracing.enabled` is set. See selmakit/tracing.py.
     "fastapi>=0.135.1",
     "pydantic>=2.12.5",
-    "pydantic-ai[duckduckgo,web-fetch]>=2.27.0",
+    "pydantic-ai[duckduckgo,web-fetch]>=2.31.0",
+    # Core since the default capability set uses the harness FileSystem
+    # (sandboxed file tools) and Skills (deferred skill loading).
+    "pydantic-ai-harness>=0.21.0",
     "python-dotenv>=1.0",
     "rich>=13.0",
     "httpx>=0.27",
@@ -57,11 +58,10 @@ telegram = [
 # No `tracing` extra: selmakit.tracing.setup() is built on the Logfire SDK,
 # which pydantic-ai already requires — the OTel SDK and the OTLP/HTTP exporter
 # come with it, so tracing works on a core-only install.
-# Opt-in sub-agent delegation via pydantic-ai-harness (see subagents in
-# selmakit.json). Install with: uv sync --extra subagents
-subagents = [
-    "pydantic-ai-harness>=0.18.0",
-]
+# Sub-agent delegation (see subagents in selmakit.json). The harness it needs
+# is a core dependency now, so this extra is empty and kept only so existing
+# `--extra subagents` / `selmakit[subagents]` installs keep resolving.
+subagents = []
 # Everything — the batteries-included install the repo's start.sh assumes.
 all = [
     "selmakit[dashboard,telegram,subagents]",

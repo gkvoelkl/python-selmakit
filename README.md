@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.27](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.31](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -41,17 +41,17 @@ Released versions and what changed in each are listed in the
 | Output validators | `@agent.output_validator` decorator |
 | Scheduled proactive turns | `@agent.schedule(every="30m")` decorator |
 | Workspace identity files | `SOUL.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md` |
-| Skills | `SKILL.md` files — discovered, XML-injected into system prompt |
-| Filesystem tools | `FilesystemCapability(cwd=".")` — read/write/edit/ls/grep/find |
+| Skills | `SKILL.md` files — loaded on demand as *deferred capabilities* via harness `Skills`; only name + description sit in the prompt, the body arrives through `load_capability` |
+| Filesystem tools | harness `FileSystem(root_dir=".")` — `read_file`/`write_file`/`edit_file`/`list_directory`/`search_files`/`find_files`/`create_directory`/`file_info`, sandboxed to the project directory (traversal rejected, symlinks resolved before authorization) |
 | Web search & fetch | `WebSearch(local="duckduckgo")`, `WebFetch(local=True)` — native on supporting providers, local fallback otherwise |
 | External MCP servers | `McpCapability` — stdio/HTTP servers from `selmakit.json` (standard `mcpServers` shape), per-server `prefix`/`allow_tools`/`require_approval`; connections held open for the gateway's lifetime |
 | Tool approval | Gated MCP tools defer instead of executing; approve/deny via `/approve` `/deny` or the dashboard's ✅/🚫 buttons; auto-denied in unattended (heartbeat/cron) runs |
-| Sub-agent delegation | `SubAgents` (optional `subagents` extra, from [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness)) — `delegate_task` hands self-contained work to named, isolated sub-agents |
-| Dynamic prompt sections | `WorkspacePromptCapability`, `SkillsPromptCapability`, `RuntimeInfoCapability`, `BootstrapCapability` |
+| Sub-agent delegation | `SubAgents` (from [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness)) — `delegate_task` hands self-contained work to named, isolated sub-agents |
+| Dynamic prompt sections | `WorkspacePromptCapability`, `RuntimeInfoCapability`, `BootstrapCapability` |
 | Per-session thinking | `SessionThinkingCapability` — `/think high` writes to session meta, capability picks it up |
 | Live model switching | Per-session `model_override` via `/model` or the dashboard selector — takes effect next turn, no restart |
 | Verbose mode | `/verbose on` streams tool calls/results/timing and reasoning deltas into a collapsible dashboard panel |
-| OpenTelemetry tracing | Logfire SDK as a local OTel client (`send_to_logfire=False`), exporting OTLP/HTTP to a standalone Phoenix container |
+| OpenTelemetry tracing | Opt-in via `tracing.enabled`; Logfire SDK as a local OTel client (`send_to_logfire=False`) exporting OTLP/HTTP to any collector |
 | Streamlit dashboard | `selmakit.dashboard.run(title=, image=, input_placeholder=)` — brandable SSE chat + heartbeat alerts |
 | Reusable runtime | `Gateway.from_config(extra_capabilities=[...]).run()` — backend in one line |
 | Config | `selmakit.json` with 120s cache |
@@ -65,12 +65,12 @@ gateway.py
   │
   ├── Agent (selmakit.Agent wraps pydantic_ai.Agent)
   │     ├── capabilities (everything LLM-facing):
-  │     │     ├── FilesystemCapability      — read/write/edit/ls/grep/find
+  │     │     ├── FileSystem (harness)      — sandboxed read/write/edit/list/search/find
   │     │     ├── WebSearch / WebFetch      — native or local fallback
   │     │     ├── BootstrapCapability       — first-run hint while BOOTSTRAP.md exists
   │     │     ├── WorkspacePromptCapability — injects SOUL/IDENTITY/USER/… MD files
-  │     │     ├── SkillsPromptCapability    — emits the <available_skills> block
-  │     │     ├── RuntimeInfoCapability     — host/os/model/date line
+  │     │     ├── Skills (harness)          — SKILL.md as deferred capabilities
+  │     │     ├── RuntimeInfoCapability     — os/arch/model/shell/date line
   │     │     ├── SessionThinkingCapability — per-session thinking (reasoning effort) override
   │     │     └── SqliteMemory              — memory_search / memory_write
   │     ├── session_store: JsonlStore       — .selmakit/sessions/
@@ -136,7 +136,7 @@ cp .env.example .env
 # Edit .selmakit/selmakit.json to set your model
 # Edit .selmakit/workspace/IDENTITY.md and USER.md
 
-# Start Phoenix tracing (Docker) + gateway + Streamlit dashboard
+# Start gateway + Streamlit dashboard
 ./start.sh        # Linux / macOS
 start.bat         # Windows
 ```
@@ -146,7 +146,6 @@ Or run components individually:
 ```bash
 uv run python gateway.py           # gateway only
 uv run streamlit run dashboard.py  # dashboard only
-docker run -d --rm -p 6006:6006 arizephoenix/phoenix:latest  # tracing UI at http://localhost:6006
 ```
 
 ---
@@ -317,10 +316,11 @@ Everything LLM-facing lives in `capabilities=[...]`. Selmakit-specific concerns 
 from pydantic_ai.capabilities import WebFetch, WebSearch
 from selmakit import (
     Agent, JsonlStore, SqliteMemory,
-    BootstrapCapability, FilesystemCapability,
-    RuntimeInfoCapability, SessionThinkingCapability,
-    SkillsPromptCapability, WorkspacePromptCapability,
+    BootstrapCapability, RuntimeInfoCapability,
+    SessionThinkingCapability, WorkspacePromptCapability,
 )
+from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.skills import Skills
 
 state_dir = ".selmakit"
 workspace_dir = f"{state_dir}/workspace"
@@ -335,12 +335,12 @@ agent = Agent(
     commands=make_commands(config),
     heartbeat=ScheduleConfig(every="30m", active_hours=("08:00", "22:00")),
     capabilities=[
-        FilesystemCapability(cwd="."),
+        FileSystem(root_dir="."),
         WebSearch(local="duckduckgo"),
         WebFetch(local=True),
         BootstrapCapability(workspace_dir=workspace_dir),
         WorkspacePromptCapability(workspace_dir=workspace_dir),
-        SkillsPromptCapability(workspace_dir=workspace_dir),
+        Skills(f"{workspace_dir}/skills"),
         RuntimeInfoCapability(model_name="ollama/qwen3:8b"),
         SessionThinkingCapability(session_store=session_store),
     ],
@@ -363,13 +363,13 @@ agent = Agent.from_file(state_dir=".selmakit", capabilities=[WebSearch(local="du
 
 | Capability | Contribution | Lifecycle |
 |---|---|---|
-| `FilesystemCapability(cwd)` | `read`/`write`/`edit`/`ls`/`grep`/`find` toolset bound to `cwd` | `get_toolset()` |
+| `FileSystem(root_dir)` (harness) | `read_file`/`write_file`/`edit_file`/`list_directory`/`search_files`/`find_files`/`create_directory`/`file_info`, scoped to `root_dir`; paths resolving outside it are rejected | `get_toolset()` |
 | `WebSearch(local=...)` / `WebFetch(local=...)` | Native server-side on supporting providers, DuckDuckGo / markdownify fallback otherwise | `get_native_tools()` |
 | `McpCapability(servers)` | One `MCPToolset` per configured MCP server (stdio/HTTP), merged into a `CombinedToolset`; optional `prefix`/`allow_tools`/`require_approval` | `get_toolset()` |
-| `SubAgents(agents=..., models=...)` (harness) | `delegate_task` tool that runs a named sub-agent in isolation, with an optional per-delegation model menu; from `pydantic-ai-harness` (optional `subagents` extra) | `get_toolset()` |
+| `SubAgents(agents=..., models=...)` (harness) | `delegate_task` tool that runs a named sub-agent in isolation, with an optional per-delegation model menu; from `pydantic-ai-harness` | `get_toolset()` |
 | `WorkspacePromptCapability(workspace_dir)` | Injects all `*.md` files from the workspace under `## Workspace Files` | dynamic `get_instructions()` |
-| `SkillsPromptCapability(workspace_dir)` | Emits `<available_skills>` XML + selection rules | dynamic `get_instructions()` |
-| `RuntimeInfoCapability(model_name)` | One-line `host / os / model / date` runtime info; date re-evaluated each run | dynamic `get_instructions()` |
+| `Skills(directories)` (harness) | Each `<skill>/SKILL.md` becomes a deferred capability: name + description in the prompt, body pulled in via `load_capability` | `get_instructions()` + `get_toolset()` |
+| `RuntimeInfoCapability(model_name)` | One-line `os / arch / model / shell / date` runtime info; date re-evaluated each run. Hostname omitted by default (`include_host=True` to add it) — it usually embeds the account name | dynamic `get_instructions()` |
 | `BootstrapCapability(workspace_dir)` | Adds a bootstrap-pending hint while `BOOTSTRAP.md` has non-empty content; emptying or deleting the file silences it on the next turn | dynamic `get_instructions()` |
 | `SessionThinkingCapability(session_store)` | Reads `"thinking"` meta key via `ctx.deps` (= session_key) and sets the unified `thinking` setting per run | `get_model_settings()` |
 | `SqliteMemory(workspace_dir, …)` | `memory_search` / `memory_write` toolset + usage instructions | `get_toolset()` + `get_instructions()` |
@@ -518,7 +518,7 @@ async with agent.run_stream_events(prompt, session_key="user:42") as (is_cmd, va
 
 Both methods handle the full pre-run pipeline internally:
 - Slash command routing (no LLM call)
-- `/skill <name>` → converted to `"Execute skill <name>."` prompt
+- `/skill <name>` → converted to a `"load the <name> capability with load_capability, then carry out its instructions"` prompt
 - Stale session detection and reset
 - Auto-compaction when session exceeds 50 messages
 - `deps=session_key` is passed through so capabilities (e.g. `SessionThinkingCapability`) can read per-session state
@@ -661,14 +661,28 @@ This keeps context windows manageable without losing important information.
 
 ## Tracing
 
-Phoenix (Arize) is used for OpenTelemetry tracing. Run it as a standalone container:
+Tracing is **off by default** and ships with no backend of its own — selmakit
+exports OpenTelemetry spans over OTLP/HTTP to whatever collector you point it
+at. Turn it on in `selmakit.json`:
 
-```bash
-docker run -d --rm -p 6006:6006 arizephoenix/phoenix:latest
-# UI: http://localhost:6006   OTLP/HTTP: http://localhost:6006/v1/traces
+```json
+{
+  "tracing": {
+    "enabled": true,
+    "endpoint": "http://localhost:4318/v1/traces",
+    "project_name": "selmakit",
+    "capture_http": true
+  }
+}
 ```
 
-`selmakit/tracing.py` is built on the **Logfire SDK**, which ships with `pydantic-ai` — there is nothing extra to install, and tracing works on a core-only install. Logfire is used purely as an OpenTelemetry client: `send_to_logfire=False` means **no data leaves the machine and no Logfire account or token is involved**. Spans are exported over OTLP/HTTP to `http://localhost:6006/v1/traces`; any OTLP/HTTP collector works as a drop-in replacement.
+`Gateway.serve()` only calls `setup()` when `enabled` is set: an exporter with
+nothing listening retries every refused connection and logs an error per turn,
+so leaving it off keeps a collector-less run quiet. For day-to-day inspection
+without any collector, the dashboard's [Transcript view](#dashboard) shows the
+system prompt, injected context and every tool call with its result.
+
+`selmakit/tracing.py` is built on the **Logfire SDK**, which ships with `pydantic-ai` — there is nothing extra to install, and tracing works on a core-only install. Logfire is used purely as an OpenTelemetry client: `send_to_logfire=False` means **no data leaves the machine and no Logfire account or token is involved**. Spans go only to `endpoint`; any OTLP/HTTP collector works.
 
 `setup()` turns on two instrumentations:
 
@@ -676,8 +690,6 @@ docker run -d --rm -p 6006:6006 arizephoenix/phoenix:latest
 - `logfire.instrument_httpx(...)` (`capture_http=True`, the default) — the raw HTTP request bodies sent to the model provider, i.e. what actually went over the wire. Headers are deliberately **not** captured: they carry the provider API keys.
 
 Pass `capture_http=False` to `setup()` for pydantic-ai spans only.
-
-**Why a container?** `arize-phoenix` is **not** a Python dependency of selmakit: it is the full Phoenix *server*, and installing it drags ~43 packages (boto3, scikit-learn, scipy, SQLAlchemy, strawberry-graphql) into the agent venv. Running it standalone keeps the venv lean while selmakit talks to it purely over OTLP. (Its old `pydantic-ai-slim<2` pin, which used to make co-installation impossible, is gone — 19.x requires `>=2.0.0`.)
 
 ---
 
@@ -696,8 +708,8 @@ selmakit/
   schedule.py       — ScheduleRunner, ScheduleConfig
   session.py        — JsonlStore
   skills.py         — skill discovery + XML builder
-  tools.py          — make_filesystem_tools() (consumed by FilesystemCapability)
-  tracing.py        — Logfire SDK as local OTel client: OTLP/HTTP export to Phoenix (degrades gracefully)
+  tools.py          — make_filesystem_tools() (standalone; the default set uses harness FileSystem)
+  tracing.py        — Logfire SDK as local OTel client: opt-in OTLP/HTTP export (degrades gracefully)
   workspace.py      — workspace file loading + bootstrap detection
   channels/
     webchat.py      — WebChatChannel (FastAPI + SSE)
@@ -713,8 +725,8 @@ examples/
   weather_mcp.py    — self-contained reference MCP server (Open-Meteo) for the MCP client
 gateway.py          — reference entry point: Gateway.from_config().run()
 dashboard.py        — reference entry point: selmakit.dashboard.run(...)
-start.sh            — starts Phoenix (Docker) + gateway + dashboard (Linux / macOS)
-start.bat           — starts Phoenix (Docker) + gateway + dashboard (Windows)
+start.sh            — starts gateway + dashboard (Linux / macOS)
+start.bat           — starts gateway + dashboard (Windows)
 CHANGELOG.md        — notable changes per release
 ```
 
@@ -727,7 +739,8 @@ and cron — everything only some deployments need is an extra.
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.27.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.31.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai-harness>=0.21.0` | The official capability library — supplies the default `FileSystem` (sandboxed file tools) and `Skills` (deferred skill loading), plus `SubAgents` when enabled |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `httpx` | Async HTTP client |
 | `python-dotenv` | `.env` loading |
@@ -739,7 +752,7 @@ and cron — everything only some deployments need is an extra.
 |---|---|---|
 | `dashboard` | `streamlit>=1.0` | The Streamlit dashboard (`selmakit.dashboard`, `selmakit dashboard`) |
 | `telegram` | `python-telegram-bot>=22.6` | The Telegram channel (`channels.telegram.enabled`) |
-| `subagents` | `pydantic-ai-harness>=0.18.0` | Sub-agent delegation (`SubAgents` capability) |
+| `subagents` | *(empty — harness is a core dependency now)* | Kept so existing `selmakit[subagents]` installs keep resolving |
 | `all` | all of the above | The batteries-included install `start.sh` assumes |
 
 ```bash
