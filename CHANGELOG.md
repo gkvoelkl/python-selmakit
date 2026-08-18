@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.27] — 2026-08-18
 
 ### Fixed
 
@@ -63,6 +63,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `subprocess.run` in the `rg` helpers now passes `check=False` explicitly. Not
   cosmetic for the search call: `rg` exits 1 on "no matches", which is a normal
   empty result.
+- **Minimum `pydantic-ai` raised to 2.31.1 and `pydantic-ai-harness` to 0.22.0.**
+  The harness release rewrote the filesystem walkers that back the default
+  capability set's `FileSystem`: `list_directory`, `search_files` and
+  `find_files` now resolve each entry's symlink before authorizing it, so one
+  pointing out of the sandbox root or dangling is dropped rather than listed,
+  and `list_directory` gained a `max_list_results` cap (default 1000, left at
+  the default — reachable in a long-lived install, where `sessions/` holds two
+  files per session). The hard skip of dot-prefixed path components survives,
+  so rooting `FileSystem` at the state dir rather than the project still holds.
+  On the pydantic-ai side both fixes are provider-specific and one is reachable
+  from here: Gemini models that reject `thinking_level='MINIMAL'` now fall back
+  to `'LOW'`. `/think` only accepts `off`/`low`/`medium`/`high`, but
+  `model.thinking` in `selmakit.json` is a free string that reaches the model
+  unchecked.
 
 ## [0.1.26] — 2026-08-16
 
@@ -269,7 +283,9 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
-[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.25...HEAD
+[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.27...HEAD
+[0.1.27]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.26...v0.1.27
+[0.1.26]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.25...v0.1.26
 [0.1.25]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.24...v0.1.25
 [0.1.24]: https://github.com/gkvoelkl/python-selmakit/compare/74784ca...v0.1.24
 [0.1.23]: https://github.com/gkvoelkl/python-selmakit/commit/74784ca
