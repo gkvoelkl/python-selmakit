@@ -18,7 +18,9 @@ async def main() -> None:
 
     while True:
         try:
-            user_input = input("You: ").strip()
+            # noqa justified: this is a standalone single-user REPL, so nothing
+            # else shares the event loop for input() to stall.
+            user_input = input("You: ").strip()  # noqa: ASYNC250
         except (EOFError, KeyboardInterrupt):
             print()
             break

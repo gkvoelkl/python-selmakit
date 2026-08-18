@@ -19,8 +19,31 @@ class TelegramReply:
     async def send_chunk(self, text: str) -> None:
         self._chunks.append(text)
 
-    async def send_tool(self, name: str) -> None:
+    # Telegram is a plain-text channel with no side panel: the live-progress
+    # parts of ReplyHandle are accepted and dropped. They must still exist —
+    # the worker calls them unconditionally under /verbose, and a missing one
+    # is an AttributeError that ends the turn as an error.
+    async def send_tool(self, name: str, args: str | None = None) -> None:
         pass  # Telegram doesn't show tool status
+
+    async def send_tool_result(
+        self, name: str, result: str, duration: float | None = None, error: bool = False
+    ) -> None:
+        pass
+
+    async def send_thinking(self, text: str) -> None:
+        pass
+
+    async def send_approval(self, pending: list) -> None:
+        """Ask for approval in text — Telegram has no ✅/🚫 buttons wired.
+
+        Appended to the chunks rather than sent on its own, so ``done()`` flushes
+        it together with whatever the model said before it stopped.
+        """
+        names = ", ".join(str(p.get("tool_name", "?")) for p in pending) or "?"
+        self._chunks.append(
+            f"\n\n⏸ Waiting for approval: {names}\nReply /approve or /deny."
+        )
 
     async def done(self) -> None:
         text = "".join(self._chunks).strip()
@@ -81,6 +104,9 @@ class TelegramChannel:
 
         await app.initialize()
         await app.start()
+        # `updater` is None only for a webhook-mode Application; ApplicationBuilder
+        # above builds the polling one, so this is set.
+        assert app.updater is not None
         await app.updater.start_polling()
         logger.info("Telegram channel active.")
         try:

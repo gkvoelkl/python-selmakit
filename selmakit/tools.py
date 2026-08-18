@@ -63,14 +63,12 @@ def _truncate_head(content: str, start_line: int = 1) -> str:
 
     kept: list[str] = []
     byte_count = 0
-    truncated_by = "lines"
 
     for i, line in enumerate(lines):
         if i >= _MAX_LINES:
             break
         line_bytes = len(line.encode("utf-8")) + (1 if i > 0 else 0)
         if byte_count + line_bytes > _MAX_BYTES:
-            truncated_by = "bytes"
             break
         kept.append(line)
         byte_count += line_bytes
@@ -289,7 +287,9 @@ def make_filesystem_tools(cwd: str = ".") -> list:
 
         def _rg_available() -> bool:
             try:
-                subprocess.run(["rg", "--version"], capture_output=True, timeout=3)
+                # check=False: only "did it run at all" matters here, the exit
+                # code does not — a missing rg raises FileNotFoundError instead.
+                subprocess.run(["rg", "--version"], capture_output=True, timeout=3, check=False)
                 return True
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 return False
@@ -309,7 +309,9 @@ def make_filesystem_tools(cwd: str = ".") -> list:
                 args.extend(["-C", str(context)])
             args.extend([pattern, str(search_path)])
             try:
-                result = subprocess.run(args, capture_output=True, timeout=30)
+                # check=False is required, not just explicit: rg exits 1 for
+                # "no matches", which is a normal empty result, not an error.
+                result = subprocess.run(args, capture_output=True, timeout=30, check=False)
                 raw_lines = result.stdout.decode("utf-8", errors="replace").splitlines()
                 limit_reached = len(raw_lines) > effective_limit
                 lines = raw_lines[:effective_limit]

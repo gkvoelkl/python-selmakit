@@ -24,10 +24,12 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence, cast
+from typing import Any, Awaitable, Callable, Sequence, cast
 
 from pydantic_ai.capabilities import WebFetch, WebSearch
 from pydantic_ai.common_tools.web_fetch import web_fetch_tool
+from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.tools import Tool
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.skills import Skills
 
@@ -80,8 +82,33 @@ def local_web_fetch() -> WebFetch:
     :11434, the gateway on :8000 — so skills that health-check them need the
     guard lifted. Keep this in mind for any deployment where the agent handles
     untrusted input: it can then reach services on the host and LAN.
+
+    The fetcher is also wrapped so an unexpected exception degrades to a
+    ``ModelRetry`` instead of aborting the whole turn. It already raises
+    ``ModelRetry`` for HTTP and connection failures, but conversion errors escape:
+    ``markdownify`` recurses once per DOM node, so a deeply nested page (the W3C
+    WebGPU spec is one) raises ``RecursionError``, which propagates out of the
+    tool, out of the run, and reaches the user as a bare "maximum recursion depth
+    exceeded". One unreadable URL in a research batch should skip like a 404 does.
     """
-    return WebFetch(local=web_fetch_tool(allow_local_urls=True))
+    tool = web_fetch_tool(allow_local_urls=True)
+    # `Tool.function` is a union that also covers the `(ctx, …)` and sync tool
+    # shapes; this one is `async (url: str)`, so narrow it for the call below.
+    fetch = cast(Callable[..., Awaitable[Any]], tool.function)
+
+    async def guarded_web_fetch(url: str) -> Any:
+        try:
+            return await fetch(url=url)
+        except ModelRetry:
+            # The fetcher's own "skip this URL" signal — already the shape we want.
+            raise
+        except Exception as e:
+            logger.warning("web_fetch failed | url=%s | %s: %s", url, type(e).__name__, e)
+            raise ModelRetry(f"Failed to fetch {url}: {type(e).__name__}: {e}") from e
+
+    return WebFetch(
+        local=Tool(guarded_web_fetch, name=tool.name, description=tool.description)
+    )
 
 
 def build_skills_capability(workspace_dir: str) -> Any | None:
@@ -150,7 +177,7 @@ def build_subagents_capability(ctx: GatewayContext) -> Any:
     from pydantic_ai_harness.subagents import ModelOption, SubAgent, SubAgents
 
     from pydantic_ai import Agent as PydanticAgent
-    from pydantic_ai.capabilities import WebFetch, WebSearch
+    from pydantic_ai.capabilities import WebSearch
     from pydantic_ai.settings import ModelSettings
 
     from selmakit.config import build_model

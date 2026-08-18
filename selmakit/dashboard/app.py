@@ -59,8 +59,7 @@ def list_ollama_models(base_url: str) -> List[str]:
     ``base_url`` (…/v1). Returns an empty list if Ollama is unreachable.
     """
     host = base_url.rstrip("/")
-    if host.endswith("/v1"):
-        host = host[: -len("/v1")]
+    host = host.removesuffix("/v1")
     try:
         resp = httpx.get(f"{host}/api/tags", timeout=2.0)
         resp.raise_for_status()

@@ -114,7 +114,7 @@ TELEGRAM_TOKEN=your-token-here
 
 def init(state_dir: str = ".selmakit") -> None:
     """Initialize the selmakit directory structure, config, and workspace files."""
-    base = Path(".").resolve()
+    base = Path.cwd()
     selmakit_dir = Path(state_dir)
     if not selmakit_dir.is_absolute():
         selmakit_dir = base / selmakit_dir

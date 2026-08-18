@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+import httpx
 from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
@@ -125,8 +125,14 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
         if provider == "ollama":
             url = f"{config.model.effective_base_url.rstrip('/')}/models"
             try:
-                with urllib.request.urlopen(url, timeout=5) as resp:
-                    installed = [m["id"] for m in json.loads(resp.read()).get("data", [])]
+                # httpx, not urllib: command handlers are awaited on the gateway's
+                # event loop, which also carries the channels, the worker, the
+                # heartbeat and cron. A blocking urlopen against an unreachable
+                # endpoint would stall all of them for the full timeout.
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    installed = [m["id"] for m in resp.json().get("data", [])]
             except Exception:
                 installed = None  # endpoint unreachable → don't block the switch
             if installed is not None and model_name not in installed:
@@ -140,8 +146,11 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
         """List all models available at the configured endpoint."""
         url = f"{config.model.base_url}/models"
         try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
-                data = json.loads(resp.read())
+            # See cmd_model: blocking I/O here would stall the whole gateway.
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
             models = [m["id"] for m in data.get("data", [])]
             if not models:
                 return "No models found."

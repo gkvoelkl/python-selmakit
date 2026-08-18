@@ -12,6 +12,7 @@ from pydantic_ai import (
     Agent as _PydanticAgent,
     DeferredToolRequests,
     DeferredToolResults,
+    ToolApproved,
     ToolDenied,
 )
 
@@ -114,6 +115,13 @@ class Agent:
             # surface as a run output instead of executing; harmless for normal
             # turns, whose output stays a plain str.
             output_type=[str, DeferredToolRequests],
+            # pydantic-ai's default of 1 is too tight here: skills are deferred
+            # capabilities, so their names sit in the prompt catalog next to the real
+            # tools and smaller local models call e.g. `web-research` directly instead
+            # of `load_capability(id="web-research")`. Each unknown name is a ModelRetry
+            # charged to that name, so a budget of 1 kills the turn on the second
+            # fumble — with room to retry the model falls back to the real tools.
+            retries={"tools": 4},
         )
         self._session_store = session_store or JsonlStore(
             path=str(self._state_dir / "sessions"),
@@ -513,7 +521,9 @@ class Agent:
         guard = 0
         while isinstance(result.output, DeferredToolRequests) and guard < _MAX_APPROVAL_ITERATIONS:
             guard += 1
-            denials = {
+            # Annotated to the field's own value type — a bare dict comprehension
+            # infers dict[str, ToolDenied], which dict invariance rejects.
+            denials: dict[str, bool | ToolApproved | ToolDenied] = {
                 c.tool_call_id: ToolDenied(
                     message="Auto-denied: approval-required tool blocked in an unattended run."
                 )

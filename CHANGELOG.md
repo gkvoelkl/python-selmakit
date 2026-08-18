@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **One unreadable page no longer aborts the whole turn.** `WebFetch`'s local
+  fetcher raises `ModelRetry` for HTTP and connection failures, but conversion
+  errors escape it: `markdownify` recurses once per DOM node, so a deeply nested
+  page (the W3C WebGPU spec is one) raises `RecursionError`, which propagated out
+  of the tool, out of the run, and reached the user as a bare "maximum recursion
+  depth exceeded". `local_web_fetch()` now wraps the fetcher so any unexpected
+  exception degrades to a `ModelRetry` naming the URL — an unreadable URL in a
+  research batch skips like a 404 does — and logs a warning.
+- **A tool-name fumble no longer kills the turn.** Skills are deferred
+  capabilities, so their names sit in the prompt catalog next to the real tools
+  and smaller local models call e.g. `web-research` directly instead of
+  `load_capability(id="web-research")`. Each unknown name is a `ModelRetry`
+  charged to that name, and pydantic-ai's default budget of 1 ended the run on
+  the second fumble. The agent is now built with `retries={"tools": 4}`, leaving
+  room for the model to fall back to the real tools.
+- **`TelegramReply` implemented only half of `ReplyHandle`**, and the worker
+  calls the rest unconditionally: `/verbose on` made every Telegram turn fail
+  (`send_tool(name, args=…)` → `TypeError`, `send_tool_result`/`send_thinking` →
+  `AttributeError`), and a turn ending on an approval-gated MCP tool hit a
+  missing `send_approval` and surfaced as an error instead of the request. The
+  live-progress parts are now accepted and dropped — Telegram has no side panel
+  — while `send_approval` appends a text notice naming the gated tools and
+  asking for `/approve` or `/deny`, since the ✅/🚫 buttons are dashboard-only.
+- **`/model` and `/models` stalled the entire gateway.** Both validated against
+  the Ollama endpoint with a blocking `urllib.request.urlopen(timeout=5)` from
+  an `async def`. Command handlers are awaited on the gateway's event loop, and
+  `serve()` runs the channels, the worker, the heartbeat and cron in one
+  `asyncio.gather()` — so an unreachable or hung endpoint froze all of them for
+  the full five seconds, not just the turn that ran the command. Now `httpx`
+  (already a core dependency): measured against a socket that accepts and never
+  answers, the loop keeps running (49 ticks over the 5 s timeout, previously 0).
+- `truncated_by` in `tools.py` was computed and never read — the truncation
+  notice never said whether the line or the byte budget hit first. Removed;
+  the notice's `Use offset=N to continue` covers both cases identically.
+- `build_subagents_capability()` re-imported `WebFetch` locally, shadowing the
+  module-level import without using it.
+
+### Changed
+
+- **`mypy` and `ruff` are now a `dev` dependency group**, so a plain `uv sync`
+  installs both and `uv run mypy selmakit/` / `uv run ruff check selmakit/` work
+  in a fresh checkout. Both report no issues; getting there fixed the
+  `TelegramReply`, `/model` and `truncated_by` bugs above plus an MCP
+  `transport` annotation and a `DeferredToolResults(approvals=…)` dict-invariance
+  error.
+  `[tool.ruff.lint]` pins a narrower set than ruff's default (`E4,E7,E9,F` +
+  `ASYNC,PLW,FURB`). Out of the box ruff reports ~125 findings here and nearly
+  all are this codebase working as designed — `BLE001` flags the
+  degrade-with-a-warning pattern the whole extras architecture rests on, and
+  `UP006` is cosmetic given `from __future__ import annotations`. The three
+  groups that are kept are the ones that actually caught bugs.
+- `subprocess.run` in the `rg` helpers now passes `check=False` explicitly. Not
+  cosmetic for the search call: `rg` exits 1 on "no matches", which is a normal
+  empty result.
+
 ## [0.1.26] — 2026-08-16
 
 ### Added

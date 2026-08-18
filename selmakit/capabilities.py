@@ -242,6 +242,7 @@ class McpCapability(AbstractCapability[Any]):
             if not getattr(s, "enabled", True):
                 continue
 
+            transport: Any  # stdio or HTTP, picked per server below
             if s.command:
                 transport = StdioTransport(
                     command=s.command, args=list(s.args),

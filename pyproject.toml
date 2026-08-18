@@ -1,6 +1,6 @@
 [project]
 name = "selmakit"
-version = "0.1.26"
+version = "0.1.27"
 description = "Minimal multi-channel agent framework built on pydantic-ai"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -35,10 +35,10 @@ dependencies = [
     # `tracing.enabled` is set. See selmakit/tracing.py.
     "fastapi>=0.135.1",
     "pydantic>=2.12.5",
-    "pydantic-ai[duckduckgo,web-fetch]>=2.31.0",
+    "pydantic-ai[duckduckgo,web-fetch]>=2.31.1",
     # Core since the default capability set uses the harness FileSystem
     # (sandboxed file tools) and Skills (deferred skill loading).
-    "pydantic-ai-harness>=0.21.0",
+    "pydantic-ai-harness>=0.22.0",
     "python-dotenv>=1.0",
     "rich>=13.0",
     "httpx>=0.27",
@@ -67,6 +67,14 @@ all = [
     "selmakit[dashboard,telegram,subagents]",
 ]
 
+[dependency-groups]
+# Dev-only tooling: installed by `uv sync` for a checkout, never shipped to
+# users of the published package (dependency groups are not part of the wheel).
+dev = [
+    "mypy>=1.14",
+    "ruff>=0.16",
+]
+
 [project.scripts]
 selmakit = "selmakit.cli:main"
 
@@ -78,6 +86,21 @@ Issues = "https://github.com/gkvoelkl/python-selmakit/issues"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.ruff.lint]
+# Deliberately narrower than ruff's default set. Out of the box ruff reports
+# ~125 findings here, and almost all of them are this codebase working as
+# designed: BLE001 (blind-except) flags the degrade-with-a-warning pattern the
+# whole extras architecture is built on, and UP006 is cosmetic because every
+# module has `from __future__ import annotations`. A linter that prints 125
+# lines per run gets ignored, so keep the pyflakes core plus only the groups
+# that have actually caught bugs here:
+#   ASYNC — blocking calls on the event loop. The gateway runs channels, worker,
+#           heartbeat and cron in one asyncio.gather(), so one blocking call
+#           stalls every one of them, not just the turn that made it.
+#   PLW   — pylint warnings (e.g. subprocess.run without an explicit check).
+#   FURB  — modernizations that are real simplifications, not style churn.
+select = ["E4", "E7", "E9", "F", "ASYNC", "PLW", "FURB"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["selmakit"]
