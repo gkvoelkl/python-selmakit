@@ -13,12 +13,24 @@ mentions ``/etc/passwd``" and "the bot sends ``/etc/passwd``": a candidate is
 delivered only when it resolves — ``..`` collapsed, symlinks followed — inside
 an explicit root. ``root=None`` disables the whole mechanism and is the default
 everywhere, so no existing deployment starts uploading anything on upgrade.
+
+**Which files to consider and which *form* of them to send are two different
+questions, answered in two different places.** ``find_attachments`` answers the
+first: exactly the files the answer names. The second belongs to the channel,
+because it is the only party that knows what it can display — Telegram's file
+viewer shows a folium map as a blank page (the map builds itself from CDN
+scripts), while the dashboard embeds the same HTML happily. So the application
+lays down whatever forms of its artefact are useful (a ``.png`` beside the
+``.html``; a vision model cannot read HTML either), the channel picks among
+them via ``pair_renderable_siblings`` with *its own* renderable/substitute
+table, and the model is told about neither — it just names the artefact it
+produced.
 """
 from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
@@ -109,6 +121,16 @@ def _resolve_inside(candidate: str, root: Path) -> Path | None:
         return None
 
 
+def _attachment(path: Path, max_bytes: int) -> Attachment | None:
+    """Size ``path`` into an ``Attachment``, or ``None`` if it cannot be read."""
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        logger.debug("Attachment %s unreadable: %s", path, e)
+        return None
+    return Attachment(path=path, size=size, too_large=size > max_bytes)
+
+
 def find_attachments(
     text: str,
     root: str | Path | None,
@@ -132,10 +154,68 @@ def find_attachments(
         if path is None or path in seen:
             continue
         seen.add(path)  # the same artefact named twice is still sent once
-        try:
-            size = path.stat().st_size
-        except OSError as e:
-            logger.debug("Attachment %s unreadable: %s", path, e)
-            continue
-        found.append(Attachment(path=path, size=size, too_large=size > max_bytes))
+        attachment = _attachment(path, max_bytes)
+        if attachment is not None:
+            found.append(attachment)
     return found
+
+
+def pair_renderable_siblings(
+    attachments: Sequence[Attachment],
+    root: str | Path | None,
+    *,
+    renderable: Collection[str],
+    substitutes: Sequence[str],
+    max_bytes: int = DEFAULT_MAX_BYTES,
+) -> list[Attachment]:
+    """Add a viewable form beside each attachment this channel cannot render.
+
+    ``renderable`` is the set of suffixes the *calling channel* can display and
+    ``substitutes`` the forms it would rather look at, best first — both are
+    arguments and not constants here on purpose: this module knows what a
+    sibling is, only the channel knows what it can show.
+
+    For an attachment outside ``renderable`` the sibling is looked up by
+    convention — **same directory, same stem, other suffix** — with no globbing
+    and no search, so an application opts in simply by writing ``map.png`` next
+    to its ``map.html``. The picture is placed *ahead* of the original: the
+    reader should see it without scrolling, while the original still goes out
+    because it stays useful on a desktop later.
+
+    A sibling is a path derived from model output like any other, so it passes
+    the same containment check, and one already in ``attachments`` is left where
+    it is rather than sent twice.
+    """
+    if root is None:
+        return list(attachments)
+
+    root_path = Path(root)
+    renderable_suffixes = {s.lower() for s in renderable}
+    seen = {a.path for a in attachments}
+    paired: list[Attachment] = []
+    for attachment in attachments:
+        if attachment.path.suffix.lower() not in renderable_suffixes:
+            sibling = _find_sibling(attachment.path, root_path, substitutes, seen, max_bytes)
+            if sibling is not None:
+                seen.add(sibling.path)
+                paired.append(sibling)  # picture first — see above
+        paired.append(attachment)
+    return paired
+
+
+def _find_sibling(
+    path: Path,
+    root: Path,
+    substitutes: Sequence[str],
+    seen: Collection[Path],
+    max_bytes: int,
+) -> Attachment | None:
+    """The best available ``<stem>.<substitute>`` beside ``path``, if any."""
+    for suffix in substitutes:
+        candidate = _resolve_inside(str(path.with_suffix(suffix)), root)
+        if candidate is None or candidate in seen:
+            continue
+        attachment = _attachment(candidate, max_bytes)
+        if attachment is not None:
+            return attachment
+    return None

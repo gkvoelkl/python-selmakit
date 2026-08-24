@@ -5,6 +5,44 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.32] — 2026-08-24
+
+### Added
+
+- **A channel may pick the form of an artefact it can actually show.** Measured with
+  the geo agent: it answered with an interactive folium map and named the `.html`.
+  Telegram delivered that file faithfully and it opened as a **blank white page** —
+  the map builds itself in JavaScript from CDN resources (Leaflet, jQuery,
+  awesome-markers), none of which that viewer loads. A `.png` of the same map lay
+  next to it on disk, unnamed and therefore unsent.
+
+  When an attachment is in a format the channel cannot render, the channel now also
+  sends a **same-directory, same-stem sibling** in a format it can:
+
+  ```
+  map.html   named in the answer, not viewable in the chat
+  map.png    lies beside it                 → sent as well, picture first
+  ```
+
+  Both go out, the picture ahead of the original — the HTML is not worthless on a
+  phone, it is just worth opening later on a desktop. The sibling passes the same
+  `attach_root` containment check as any other candidate (it is derived from model
+  output too), is sent exactly once if the answer happens to name it as well, and no
+  sibling means the previous behaviour unchanged.
+
+  **The decision lives in the channel, not in the scanner.** `find_attachments`
+  answers *which* files (the ones the answer names); only the channel knows what it
+  can display, so it declares a table — `TelegramReply.RENDERABLE_SUFFIXES` /
+  `SUBSTITUTE_SUFFIXES` — and hands it to `pair_renderable_siblings()`, which
+  hard-codes no channel's answer. Web chat embeds HTML itself and substitutes
+  nothing; adding a channel with different abilities is a table entry, not a rewrite.
+
+  The split is the point: the application lays down whatever forms of its artefact
+  are useful (a `.png` next to the `.html` also serves a vision model, which cannot
+  read HTML either), the channel chooses among them, and **the model is told about
+  neither** — it just names the artefact it produced. It must never learn which
+  channel is reading.
+
 ## [0.1.31] — 2026-08-24
 
 ### Added
@@ -418,7 +456,8 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
-[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.31...HEAD
+[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.32...HEAD
+[0.1.32]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.28...v0.1.30
 [0.1.28]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.27...v0.1.28

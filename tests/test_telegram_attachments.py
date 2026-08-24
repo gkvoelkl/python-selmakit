@@ -15,7 +15,11 @@ import asyncio
 import logging
 from pathlib import Path
 
-from selmakit.attachments import DEFAULT_MAX_BYTES
+from selmakit.attachments import (
+    DEFAULT_MAX_BYTES,
+    find_attachments,
+    pair_renderable_siblings,
+)
 from selmakit.channels.telegram import TelegramReply
 from selmakit.config import TelegramConfig
 
@@ -203,3 +207,106 @@ def test_upload_failure_does_not_break_the_turn(tmp_path, caplog):
 
 def test_attach_files_defaults_to_off():
     assert TelegramConfig().attach_files is False
+
+
+# -- picking a form the channel can show ----------------------------------
+#
+# The answer names whichever form the agent happened to write about, and the
+# agent must not know which channel is reading. Telegram's viewer shows a
+# folium map as a blank page, so a `.png` lying beside the `.html` goes out
+# too. The rule is a convention (same dir, same stem), not a search.
+
+
+def test_unrenderable_file_brings_its_sibling_picture(tmp_path):
+    (tmp_path / "map.html").write_text("<html>needs a CDN</html>")
+    (tmp_path / "map.png").write_bytes(b"\x89PNG")
+
+    msg = _deliver(f"The map is at {tmp_path / 'map.html'}", tmp_path)
+
+    # Both go out: the HTML is still worth opening on a desktop later.
+    assert msg.photos == [tmp_path / "map.png"]
+    assert msg.documents == [tmp_path / "map.html"]
+
+
+def test_the_picture_is_sent_before_the_file_it_stands_in_for(tmp_path):
+    """Order is the feature: the reader should see the map without scrolling."""
+    (tmp_path / "map.html").write_text("<html></html>")
+    (tmp_path / "map.png").write_bytes(b"\x89PNG")
+
+    class _OrderedMessage(_FakeMessage):
+        def __init__(self):
+            super().__init__()
+            self.order: list[str] = []
+
+        async def reply_photo(self, photo, caption=None) -> None:
+            await super().reply_photo(photo, caption)
+            self.order.append("photo")
+
+        async def reply_document(self, document, caption=None) -> None:
+            await super().reply_document(document, caption)
+            self.order.append("document")
+
+    msg = _deliver(f"See {tmp_path / 'map.html'}", tmp_path, _OrderedMessage())
+
+    assert msg.order == ["photo", "document"]
+
+
+def test_no_sibling_means_the_file_goes_out_alone(tmp_path):
+    """Nothing beside it — exactly the behaviour before this feature existed."""
+    (tmp_path / "report.html").write_text("<html></html>")
+
+    msg = _deliver(f"Report: {tmp_path / 'report.html'}", tmp_path)
+
+    assert msg.documents == [tmp_path / "report.html"]
+    assert msg.photos == []
+
+
+def test_a_sibling_the_answer_also_names_is_sent_once(tmp_path):
+    (tmp_path / "map.html").write_text("<html></html>")
+    (tmp_path / "map.png").write_bytes(b"\x89PNG")
+
+    msg = _deliver(
+        f"Interactive: {tmp_path / 'map.html'} — a picture: {tmp_path / 'map.png'}",
+        tmp_path,
+    )
+
+    assert msg.photos == [tmp_path / "map.png"]
+    assert msg.documents == [tmp_path / "map.html"]
+
+
+def test_a_sibling_pointing_outside_the_root_is_never_sent(tmp_path):
+    """The sibling is derived from model output too, so it is not trusted more
+    than the path that produced it."""
+    root = tmp_path / "state"
+    root.mkdir()
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(b"\x89PNG")
+    (root / "map.html").write_text("<html></html>")
+    (root / "map.png").symlink_to(outside)
+
+    msg = _deliver(f"See {root / 'map.html'}", root)
+
+    assert msg.photos == []
+    assert msg.documents == [root / "map.html"]
+
+
+def test_a_channel_that_renders_html_substitutes_nothing(tmp_path):
+    """The renderable set lives in the channel, so a channel that can show HTML
+    — web chat — keeps sending exactly what the answer named."""
+    (tmp_path / "map.html").write_text("<html></html>")
+    (tmp_path / "map.png").write_bytes(b"\x89PNG")
+
+    found = find_attachments(f"See {tmp_path / 'map.html'}", tmp_path)
+    paired = pair_renderable_siblings(
+        found,
+        tmp_path,
+        renderable={".html", ".png"},
+        substitutes=(".png",),
+    )
+
+    assert [a.path for a in paired] == [tmp_path / "map.html"]
+
+
+def test_pairing_is_off_without_a_root(tmp_path):
+    """``root=None`` is the disabled state of the whole mechanism, here too."""
+    assert pair_renderable_siblings([], None, renderable=set(), substitutes=(".png",)) == []

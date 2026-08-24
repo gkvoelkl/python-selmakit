@@ -68,6 +68,11 @@ class WebChatReply:
         download endpoint: the gateway binds 0.0.0.0 by default and serving
         arbitrary local files over it would be a bigger door than this feature
         is worth.
+
+        This channel substitutes nothing for a file it is handed — the
+        renderable/substitute table Telegram declares (see ``TelegramReply``)
+        has no counterpart here, because a browser renders every artefact form
+        the agent produces, HTML included.
         """
         await self._queue.put({"type": "file", "path": path, "caption": caption})
 

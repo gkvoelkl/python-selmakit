@@ -6,7 +6,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from selmakit.attachments import DEFAULT_MAX_BYTES, IMAGE_SUFFIXES, find_attachments
+from selmakit.attachments import (
+    Attachment,
+    DEFAULT_MAX_BYTES,
+    IMAGE_SUFFIXES,
+    find_attachments,
+    pair_renderable_siblings,
+)
 from selmakit.message import QueueItem
 
 logger = logging.getLogger(__name__)
@@ -43,6 +49,17 @@ class TelegramReply:
     names — but only files inside that root, see ``selmakit.attachments``.
     ``attach_root=None`` (the default) attaches nothing.
     """
+
+    #: What this channel can actually *show*. An image renders inline in the
+    #: chat; anything else is a document the reader opens in Telegram's own
+    #: viewer, which runs no JavaScript and fetches nothing — an HTML map built
+    #: from CDN scripts (folium's, for one) is a blank white page there.
+    RENDERABLE_SUFFIXES = IMAGE_SUFFIXES
+
+    #: Forms to look for beside an artefact this channel cannot show, best
+    #: first. Only the channel may answer this, so it is stated here and passed
+    #: into ``pair_renderable_siblings`` rather than assumed by the scanner.
+    SUBSTITUTE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 
     def __init__(
         self,
@@ -184,13 +201,16 @@ class TelegramReply:
         ``text`` is the model's own answer, so ``find_attachments`` refuses
         anything that does not resolve inside ``attach_root`` — see
         ``selmakit.attachments`` for why that check is load-bearing.
+
+        The answer names whichever form the agent happened to mention, and the
+        agent does not know it is talking to Telegram. So an artefact this
+        channel cannot render gets its sibling picture sent alongside it, per
+        the table above — the model is never asked to pick a format.
         """
         if self._attach_root is None:
             return  # attaching is off — the default
         # The scan resolves and stats every candidate — off the shared loop.
-        attachments = await asyncio.to_thread(
-            find_attachments, text, self._attach_root, max_bytes=self._max_bytes
-        )
+        attachments = await asyncio.to_thread(self._collect, text)
         for attachment in attachments:
             if attachment.too_large:
                 await self._msg.reply_text(
@@ -204,6 +224,17 @@ class TelegramReply:
             except Exception as e:
                 # A failed upload costs an attachment, not the answer.
                 logger.warning("Telegram: could not send %s: %s", attachment.path, e)
+
+    def _collect(self, text: str) -> list[Attachment]:
+        """Blocking half of ``_attach_named_files``: scan, then pair. Off-loop."""
+        found = find_attachments(text, self._attach_root, max_bytes=self._max_bytes)
+        return pair_renderable_siblings(
+            found,
+            self._attach_root,
+            renderable=self.RENDERABLE_SUFFIXES,
+            substitutes=self.SUBSTITUTE_SUFFIXES,
+            max_bytes=self._max_bytes,
+        )
 
     async def done(self) -> None:
         try:
