@@ -334,6 +334,10 @@ class Gateway:
                     token=token,
                     queue=self.queue,
                     allowed_chat_ids=ch.telegram.allowed_chat_ids,
+                    # The file tools are sandboxed to the state dir, so that is
+                    # exactly the set of files the agent can have produced —
+                    # and the only set it may attach.
+                    attach_root=self.context.state_dir if ch.telegram.attach_files else None,
                 ))
             else:
                 logger.warning("Telegram channel enabled but TELEGRAM_TOKEN not set — skipping")

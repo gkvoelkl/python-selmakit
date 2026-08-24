@@ -157,6 +157,36 @@ def render_html_files(text: str) -> None:
         components.html(html, height=600, scrolling=True)
 
 
+def render_attachments(files: List[dict], key_prefix: str = "live") -> None:
+    """Render the files a channel delivered via ``send_file`` (SSE ``file`` events).
+
+    The event carries a local path, not a download URL — the dashboard runs on
+    the gateway's host, the same assumption ``render_html_files`` already makes.
+    Images are shown; anything else gets a download button so the file is one
+    click away instead of a path to copy.
+    """
+    for n, item in enumerate(files):
+        path = item.get("path", "")
+        caption = item.get("caption") or os.path.basename(path)
+        if not os.path.isfile(path):
+            st.caption(f"📎 {path} (not found)")
+            continue
+        if os.path.splitext(path)[1].lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+            st.image(path, caption=caption)
+            continue
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            st.caption(f"📎 {path} (unreadable)")
+            continue
+        st.download_button(
+            f"📎 {caption}", data,
+            file_name=os.path.basename(path),
+            key=f"dl_{key_prefix}_{n}",  # unique per message, not per path
+        )
+
+
 def render_tool_activity(target: Any, lines: List[str]) -> None:
     """Render the verbose tool-activity log (→ calls, ← results, 💭 thinking)
     into ``target`` (an ``st.empty()`` placeholder), collapsible so it stays out
@@ -380,6 +410,7 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                     st.markdown(message["content"])
                     if message["role"] == "assistant":
                         render_html_files(message["content"])
+                        render_attachments(message.get("attachments", []), key_prefix=f"msg{idx}")
                         # Only the most recent message can still await a decision.
                         if message.get("pending_approval") and idx == last_idx:
                             render_approval(message["pending_approval"])
@@ -426,6 +457,7 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                 activity_lines: List[str] = []   # persistent verbose log (→/←)
                 thinking_buf = ""                 # accumulated reasoning deltas
                 pending_approval: List[dict] = []  # gated tool calls awaiting a decision
+                attachments: List[dict] = []       # files delivered via send_file
 
                 def _activity() -> List[str]:
                     lines = list(activity_lines)
@@ -494,6 +526,8 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                                         render_tool_activity(activity_box, _activity())
                                 case "approval":
                                     pending_approval = event.get("pending", []) or []
+                                case "file":
+                                    attachments.append(event)
                                 case "chunk":
                                     tool_status.empty()
                                     full_reply += event.get("text", "")
@@ -510,11 +544,13 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                                         reply_box.markdown(full_reply)
 
                 render_html_files(full_reply)
+                render_attachments(attachments)
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": full_reply,
                     "tool_activity": _activity(),
                     "pending_approval": pending_approval,
+                    "attachments": attachments,
                 })
                 # Rerun so the approval buttons render for the new last message.
                 # In transcript mode always rerun: the turn is now persisted, so

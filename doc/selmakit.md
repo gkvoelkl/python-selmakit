@@ -103,6 +103,8 @@ Capabilities that need an internal object (session store, cron store, …) recei
 1. **Channels** (`selmakit.channels.WebChatChannel`, `TelegramChannel`)
    Translate external protocols (SSE, Telegram updates) into `QueueItem(session_key, prompt, reply)` objects. Each is opt-in via the `channels` config section. Telegram additionally filters on `channels.telegram.allowed_chat_ids` before anything is enqueued — empty means open, which is the pre-existing behaviour and is warned about at start.
 
+   The reply object implements `ReplyHandle`, which includes `send_file(path, caption=None)`: an artefact (a rendered map, a PNG) delivered as a file rather than as a path in the answer text. Telegram uploads it (photo for images, document otherwise); WebChat emits a `file` SSE event with the local path, which the dashboard renders. With `channels.telegram.attach_files` on, the Telegram channel also scans each finished answer and attaches the files it names — confined to the state dir by `selmakit.attachments`, because that text is model output, not user input. Off by default.
+
 2. **Worker** (`Gateway._worker()`)
    Single async loop: `item = await queue.get()` → `agent.run_stream_events(item.prompt, session_key=item.session_key)` → stream events back via `item.reply`.
 

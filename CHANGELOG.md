@@ -5,6 +5,48 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.30] — 2026-08-24
+
+### Added
+
+- **Channels can hand back a file.** `send_file(path, caption=None)` is part of the
+  `ReplyHandle` protocol, so an artefact — a rendered map, a PNG, an export — is a
+  first-class thing a channel delivers instead of a path buried in the answer text.
+  Telegram uploads it (photo for `.png/.jpg/.jpeg/.gif/.webp` so it renders inline,
+  document otherwise); WebChat emits a `file` SSE event carrying the local path,
+  which the dashboard renders inline (images) or as a download button. *A custom
+  channel with its own reply object now has to implement `send_file` — the protocol
+  is `runtime_checkable` and `QueueItem` validates against it.*
+
+- **The Telegram channel attaches the artefacts an answer names**
+  (`channels.telegram.attach_files`, default `false`). After the answer text is
+  sent, the channel re-reads it and uploads the files it mentions — no agent or
+  prompt change, so agents that already report paths start delivering files. An
+  agent asked for a map used to answer with `/Users/…/map.html`, which in Telegram
+  is nothing you can open.
+
+  **The scanned text is model output, not user input**, so the confinement in the
+  new `selmakit/attachments.py` is the load-bearing part: a path is uploaded only
+  when it resolves — `..` collapsed and symlinks followed — inside the state
+  directory, which is also the sandbox root of the agent's own file tools.
+  A hallucinated or coaxed `/etc/passwd` is refused and logged. Relative paths
+  resolve against that root, matching how the agent addresses its own files
+  (`workspace/map.html`). A file that doesn't exist is skipped quietly, each
+  distinct path is sent once in the order it appears, files over 20 MB get one
+  line saying so instead of a stalled upload, and a failed upload costs the
+  attachment, not the answer.
+
+  Note what the root includes: everything under `.selmakit/`, `selmakit.json` and
+  any API key in it among it. Switch this on for chats you would hand those files to.
+
+### Security
+
+- **The bot token no longer lands in the log file.** python-telegram-bot calls the
+  Bot API through httpx, which logs every request URL at INFO — and the token is a
+  path segment of that URL, so a gateway logging at INFO wrote the credential to
+  disk in clear text once per poll. `TelegramChannel.start()` now raises the httpx
+  logger to WARNING.
+
 ## [0.1.28] — 2026-08-24
 
 ### Security
@@ -340,7 +382,8 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
-[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.28...HEAD
+[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.30...HEAD
+[0.1.30]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.28...v0.1.30
 [0.1.28]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.27...v0.1.28
 [0.1.27]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.26...v0.1.27
 [0.1.26]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.25...v0.1.26

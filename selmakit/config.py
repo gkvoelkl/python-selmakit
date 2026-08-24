@@ -36,6 +36,12 @@ class TelegramConfig(BaseModel):
     # existed, and tightening it here would lock every running deployment out of
     # its own bot on upgrade. TelegramChannel warns at start while it is empty.
     allowed_chat_ids: list[int] = []
+    # Upload the files an answer names (a rendered map, a PNG) instead of only
+    # printing their paths — which over Telegram the user cannot open. Off by
+    # default: the answer text is model output, so the channel will only ever
+    # send files inside the state dir, and even that is a decision to make
+    # deliberately. See selmakit/attachments.py.
+    attach_files: bool = False
 
 
 class ChannelsConfig(BaseModel):

@@ -3,19 +3,38 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
+from selmakit.attachments import DEFAULT_MAX_BYTES, IMAGE_SUFFIXES, find_attachments
 from selmakit.message import QueueItem
 
 logger = logging.getLogger(__name__)
 _MAX_CHARS = 4096
+# Photos have their own, lower ceiling in the bot API; a larger image still goes
+# out, as a document.
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024
 
 
 class TelegramReply:
-    def __init__(self, msg: Any):
+    """Buffers a turn's text and flushes it on ``done()``.
+
+    With an ``attach_root`` set, ``done()`` also uploads the artefacts the answer
+    names — but only files inside that root, see ``selmakit.attachments``.
+    ``attach_root=None`` (the default) attaches nothing.
+    """
+
+    def __init__(
+        self,
+        msg: Any,
+        attach_root: Path | None = None,
+        max_bytes: int = DEFAULT_MAX_BYTES,
+    ):
         self._msg = msg
         self._chunks: list[str] = []
         self._done_event = asyncio.Event()
+        self._attach_root = attach_root
+        self._max_bytes = max_bytes
 
     async def send_chunk(self, text: str) -> None:
         self._chunks.append(text)
@@ -46,11 +65,55 @@ class TelegramReply:
             f"\n\n⏸ Waiting for approval: {names}\nReply /approve or /deny."
         )
 
+    async def send_file(self, path: str, caption: str | None = None) -> None:
+        """Upload a file to the chat.
+
+        Images go out as a photo so they render **inline** — a map the user has
+        to download first is barely better than the path they got before.
+        Everything else, and any image past the photo ceiling, goes as a document.
+        """
+        file = Path(path)
+        # Off-loop: the channels, the worker, the heartbeat and cron all share
+        # one event loop, so a blocking call here stalls all of them.
+        stat = await asyncio.to_thread(file.stat)
+        if file.suffix.lower() in IMAGE_SUFFIXES and stat.st_size <= _MAX_PHOTO_BYTES:
+            await self._msg.reply_photo(file, caption=caption)
+        else:
+            await self._msg.reply_document(file, caption=caption)
+
+    async def _attach_named_files(self, text: str) -> None:
+        """Upload the artefacts ``text`` names, once each, in order.
+
+        ``text`` is the model's own answer, so ``find_attachments`` refuses
+        anything that does not resolve inside ``attach_root`` — see
+        ``selmakit.attachments`` for why that check is load-bearing.
+        """
+        if self._attach_root is None:
+            return  # attaching is off — the default
+        # The scan resolves and stats every candidate — off the shared loop.
+        attachments = await asyncio.to_thread(
+            find_attachments, text, self._attach_root, max_bytes=self._max_bytes
+        )
+        for attachment in attachments:
+            if attachment.too_large:
+                await self._msg.reply_text(
+                    f"📎 {attachment.path.name} is too large to send "
+                    f"({attachment.size / 1_000_000:.1f} MB, limit "
+                    f"{self._max_bytes / 1_000_000:.0f} MB)."
+                )
+                continue
+            try:
+                await self.send_file(str(attachment.path))
+            except Exception as e:
+                # A failed upload costs an attachment, not the answer.
+                logger.warning("Telegram: could not send %s: %s", attachment.path, e)
+
     async def done(self) -> None:
         text = "".join(self._chunks).strip()
         if text:
             for i in range(0, len(text), _MAX_CHARS):
                 await self._msg.reply_text(text[i:i + _MAX_CHARS])
+            await self._attach_named_files(text)
         self._done_event.set()
 
     async def send_error(self, e: Exception) -> None:
@@ -66,6 +129,11 @@ class TelegramChannel:
 
     ``allowed_chat_ids`` is the access list: only those chats can drive the
     agent. An empty list accepts every chat — see ``_log_access_policy``.
+
+    ``attach_root`` switches on artefact delivery: after each answer the channel
+    uploads the files that answer names, confined to that directory (the
+    gateway passes the state dir, which is also the file tools' sandbox root).
+    ``None`` — the default — attaches nothing.
     """
 
     def __init__(
@@ -73,10 +141,12 @@ class TelegramChannel:
         token: str,
         queue: asyncio.Queue,
         allowed_chat_ids: Sequence[int] | None = None,
+        attach_root: str | Path | None = None,
     ):
         self._token = token
         self._queue = queue
         self._allowed_chat_ids = set(allowed_chat_ids or ())
+        self._attach_root = Path(attach_root) if attach_root is not None else None
 
     @staticmethod
     def _session_key(update: Any) -> str:
@@ -142,12 +212,24 @@ class TelegramChannel:
         text = msg.text.strip()
         prompt = text if text.startswith("/") else f"[{user.first_name}]: {text}"
 
-        reply = TelegramReply(msg)
+        reply = TelegramReply(msg, attach_root=self._attach_root)
         await self._queue.put(QueueItem(session_key=session_key, prompt=prompt, reply=reply))
         await reply.wait()
 
+    @staticmethod
+    def _silence_httpx_request_log() -> None:
+        """Keep the bot token out of the log file.
+
+        python-telegram-bot talks to the Bot API over httpx, which logs every
+        request URL at INFO — and the token *is* a path segment of that URL. A
+        gateway logging at INFO therefore writes the bot credential to disk in
+        clear text, once per poll. WARNING keeps httpx's actual problems visible.
+        """
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+
     async def start(self) -> None:
         self._log_access_policy()
+        self._silence_httpx_request_log()
         try:
             from telegram.ext import ApplicationBuilder, MessageHandler, filters as tg_filters
         except ImportError:

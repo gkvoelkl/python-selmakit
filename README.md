@@ -230,7 +230,8 @@ The root `gateway.py` and `dashboard.py` in this repo are exactly such reference
     },
     "telegram": {
       "enabled": false,
-      "allowed_chat_ids": []
+      "allowed_chat_ids": [],
+      "attach_files": false
     }
   },
   "heartbeat": {
@@ -632,7 +633,7 @@ FastAPI app with SSE streaming.
 | `POST /webchat/stream` | Send a message, receive SSE stream |
 | `GET /webchat/heartbeat/poll` | Poll for pending proactive alerts |
 
-SSE event types: `tool`, `chunk`, `error`, `done`.
+SSE event types: `tool`, `chunk`, `error`, `done`, `file`.
 
 ### TelegramChannel
 
@@ -653,6 +654,20 @@ Telegram: ignored message from chat 123456789 (not in channels.telegram.allowed_
 ```
 
 If you don't know your id yet, put a placeholder (e.g. `[0]`) in the list and message the bot — the line above names the id that was dropped.
+
+**Sending artefacts — `channels.telegram.attach_files`.** An agent that renders a map or a chart can only put the file's *path* into its answer. In the browser that is enough; in Telegram a line like `/Users/you/.selmakit/workspace/map.html` is useless. With `attach_files` on, the channel re-reads the answer it just sent, and uploads the files that answer names — images as photos so they render inline, everything else as documents:
+
+```json
+"telegram": { "enabled": true, "allowed_chat_ids": [123456789], "attach_files": true }
+```
+
+No agent or prompt change is needed; agents that already report paths start delivering files.
+
+**It is off by default, and it is confined to `.selmakit/`.** The text being scanned is *model output, not user input* — whatever the model wrote arrives as a plausible-looking path, including one it hallucinated and one a prompt-injected web page talked it into naming. So a path is only ever uploaded when it resolves — `..` collapsed, symlinks followed — inside the state directory, which is also the sandbox root of the agent's own file tools. A path outside it is refused and logged; everything else is silent (a file that doesn't exist is skipped, since an answer may name a file it never wrote). Files over 20 MB get one line saying so rather than a stalled upload, each distinct path is sent once, and a failed upload costs the attachment, not the answer.
+
+Note the flip side of that root: everything under `.selmakit/` is attachable, including `selmakit.json` with any API key in it. Turn this on for chats you would hand those files to.
+
+Other channels get the same delivery primitive: `send_file(path, caption=None)` is part of the `ReplyHandle` protocol, so custom code can push an artefact from any channel. WebChat emits it as a `file` SSE event carrying the local path, which the dashboard renders inline (images) or as a download button — the same "dashboard runs on the gateway's host" assumption it already makes for embedded HTML reports. Deliberately not an HTTP download endpoint: the gateway binds `0.0.0.0` by default.
 
 ---
 

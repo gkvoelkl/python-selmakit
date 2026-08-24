@@ -58,6 +58,19 @@ class WebChatReply:
         """Emit an approval request for gated tool calls awaiting /approve or /deny."""
         await self._queue.put({"type": "approval", "pending": pending})
 
+    async def send_file(self, path: str, caption: str | None = None) -> None:
+        """Deliver an artefact as a ``file`` event carrying its local path.
+
+        The web client runs on the same host as the gateway — that is already
+        how the dashboard embeds agent-generated HTML reports — so the path is
+        the whole payload and the client reads the file itself (see
+        ``render_attachments`` in the dashboard). Deliberately *not* an HTTP
+        download endpoint: the gateway binds 0.0.0.0 by default and serving
+        arbitrary local files over it would be a bigger door than this feature
+        is worth.
+        """
+        await self._queue.put({"type": "file", "path": path, "caption": caption})
+
     async def done(self) -> None:
         await self._queue.put({"type": "done", "session_key": self._session_key})
         await self._queue.put(None)
