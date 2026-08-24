@@ -105,6 +105,8 @@ Capabilities that need an internal object (session store, cron store, …) recei
 
    The reply object implements `ReplyHandle`, which includes `send_file(path, caption=None)`: an artefact (a rendered map, a PNG) delivered as a file rather than as a path in the answer text. Telegram uploads it (photo for images, document otherwise); WebChat emits a `file` SSE event with the local path, which the dashboard renders. With `channels.telegram.attach_files` on, the Telegram channel also scans each finished answer and attaches the files it names — confined to the state dir by `selmakit.attachments`, because that text is model output, not user input. Off by default.
 
+   Telegram also reports progress while a turn runs, since a multi-minute local-model turn is otherwise indistinguishable from a dead bot: a `typing…` action refreshed every 4 s (started when the message is enqueued, stopped in `done()` *and* `send_error()` — a leaked refresher would keep the chat typing forever), plus the tool names under `channels.telegram.show_tools` (default on). The tool names go into **one message per turn, edited in place at most once a second**: the Bot API allows a bot roughly one message per second per chat, so a per-call message would throttle a twenty-tool run. `send_tool_result` and `send_thinking` stay no-ops — a result can be tens of kilobytes.
+
 2. **Worker** (`Gateway._worker()`)
    Single async loop: `item = await queue.get()` → `agent.run_stream_events(item.prompt, session_key=item.session_key)` → stream events back via `item.reply`.
 

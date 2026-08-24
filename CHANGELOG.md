@@ -5,6 +5,42 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.31] — 2026-08-24
+
+### Added
+
+- **Telegram shows that the agent is working, and which tools it is using.** A turn
+  used to be completely silent: a geo request on a local model takes three to ten
+  minutes, and in that time the chat showed nothing — a watcher could not tell a
+  working agent from a broken one. Now the channel keeps a `typing…` indicator alive
+  for the whole turn (started when the message is enqueued, refreshed every 4 s
+  because the action expires after ~5, stopped in `done()` **and** `send_error()`),
+  and posts the tool names as they are called:
+
+  ```
+  🔧 osm_features
+  🔧 qgis_reproject
+  ```
+
+  Configurable via `channels.telegram.show_tools` (default `true`); the typing
+  indicator is unconditional.
+
+  **The tool output is bounded, not one message per call.** The Bot API throttles a
+  bot to roughly one message per second per chat and counts edits against the same
+  budget, so a twenty-tool run posting a line each would spend the turn throttled.
+  The channel sends one progress message per turn and edits it in place at most once
+  a second; calls in between coalesce into the next edit, and the last one is always
+  flushed before the answer. The message keeps the newest 12 lines plus a `… n more`
+  counter so it cannot grow towards the 4096-char limit. Arguments and results are
+  never posted — a tool result can be tens of kilobytes, and the signal worth paying
+  for on a phone screen is *which* tool ran, so `send_tool_result` and `send_thinking`
+  stay no-ops.
+
+  Tests (`tests/test_telegram_progress.py`, fake telegram objects, no token or
+  network) pin the bounds that matter: the refresher is cancelled on both exit paths
+  and no task survives the turn, and twenty tool calls in a row still deliver the
+  answer within a fixed number of API calls.
+
 ## [0.1.30] — 2026-08-24
 
 ### Added

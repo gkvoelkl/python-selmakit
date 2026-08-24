@@ -1,6 +1,6 @@
 [project]
 name = "selmakit"
-version = "0.1.30"
+version = "0.1.31"
 description = "Minimal multi-channel agent framework built on pydantic-ai"
 readme = "README.md"
 requires-python = ">=3.11"

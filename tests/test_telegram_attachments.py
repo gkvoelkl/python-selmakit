@@ -27,9 +27,13 @@ class _FakeMessage:
         self.replies: list[str] = []
         self.photos: list[Path] = []
         self.documents: list[Path] = []
+        self.actions: list[str] = []
 
     async def reply_text(self, text: str) -> None:
         self.replies.append(text)
+
+    async def reply_chat_action(self, action: str) -> None:
+        self.actions.append(action)
 
     async def reply_photo(self, photo, caption=None) -> None:
         self.photos.append(Path(photo))

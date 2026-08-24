@@ -14,10 +14,30 @@ _MAX_CHARS = 4096
 # Photos have their own, lower ceiling in the bot API; a larger image still goes
 # out, as a document.
 _MAX_PHOTO_BYTES = 10 * 1024 * 1024
+# A "typing…" chat action expires after ~5s, so it has to be re-sent while the
+# turn runs. 4s leaves headroom without hammering the API.
+_TYPING_REFRESH_SECONDS = 4.0
+# The Bot API throttles a bot to roughly one message *per chat per second*, and
+# edits count against the same budget. A local model can fire twenty tool calls
+# in a few seconds, so the progress line is written at most this often; the rest
+# coalesce into the next write. See _write_tool_status().
+_TOOL_EDIT_INTERVAL = 1.0
+# How many tool names the progress message shows. Older ones scroll off with a
+# count, so the message can never grow towards the 4096-char limit.
+_TOOL_LINES = 12
 
 
 class TelegramReply:
     """Buffers a turn's text and flushes it on ``done()``.
+
+    While the turn runs the chat shows progress, because otherwise it shows
+    nothing at all: a local model doing geo work can think for minutes, and a
+    silent chat is indistinguishable from a dead one. Two signals:
+
+    * a ``typing…`` chat action, kept alive from ``start_typing()`` until
+      ``done()`` / ``send_error()``;
+    * one **single** message listing the tools as they are called, edited in
+      place (``show_tools``, on by default).
 
     With an ``attach_root`` set, ``done()`` also uploads the artefacts the answer
     names — but only files inside that root, see ``selmakit.attachments``.
@@ -29,27 +49,104 @@ class TelegramReply:
         msg: Any,
         attach_root: Path | None = None,
         max_bytes: int = DEFAULT_MAX_BYTES,
+        show_tools: bool = True,
     ):
         self._msg = msg
         self._chunks: list[str] = []
         self._done_event = asyncio.Event()
         self._attach_root = attach_root
         self._max_bytes = max_bytes
+        self._show_tools = show_tools
+        self._typing_task: asyncio.Task | None = None
+        self._tool_names: list[str] = []
+        self._status_msg: Any = None
+        self._last_status_write: float | None = None
+        self._status_stale = False
+
+    # -- progress: typing indicator ---------------------------------------
+
+    def start_typing(self) -> None:
+        """Show ``typing…`` until the turn ends. Idempotent, never blocks.
+
+        The action itself expires after a few seconds, so a task refreshes it.
+        That task *must* not outlive the turn — a chat left permanently typing
+        by a leaked refresher is worse than no indicator at all — so every exit
+        path (``done``, ``send_error``) stops it from a ``finally``.
+        """
+        if self._typing_task is None or self._typing_task.done():
+            self._typing_task = asyncio.create_task(self._keep_typing())
+
+    async def _keep_typing(self) -> None:
+        while True:
+            try:
+                await self._msg.reply_chat_action("typing")
+            except Exception as e:
+                # A chat action is cosmetic; it must never break the reply.
+                logger.debug("Telegram: chat action failed: %s", e)
+            await asyncio.sleep(_TYPING_REFRESH_SECONDS)
+
+    def _stop_typing(self) -> None:
+        task, self._typing_task = self._typing_task, None
+        if task is not None:
+            task.cancel()
+
+    # -- progress: tool names ---------------------------------------------
+
+    async def send_tool(self, name: str, args: str | None = None) -> None:
+        """Append ``name`` to the turn's progress message.
+
+        Deliberately name-only: ``args`` can be a whole document and a single
+        run calls twenty tools, so the useful signal — *which* tool is running —
+        is also the only affordable one on a phone screen.
+        """
+        self.start_typing()  # safety net for a reply the channel did not start
+        if not self._show_tools:
+            return
+        self._tool_names.append(name)
+        self._status_stale = True
+        now = asyncio.get_running_loop().time()
+        if (
+            self._last_status_write is not None
+            and now - self._last_status_write < _TOOL_EDIT_INTERVAL
+        ):
+            return  # coalesced into the next write — see _TOOL_EDIT_INTERVAL
+        await self._write_tool_status()
+
+    async def _write_tool_status(self) -> None:
+        """Send the progress message once, then edit that same message.
+
+        One message per *turn* rather than per tool call: the chat stays
+        readable and the turn cannot be throttled into stalling by its own
+        progress reporting.
+        """
+        shown = self._tool_names[-_TOOL_LINES:]
+        lines = [f"🔧 {n}" for n in shown]
+        if len(self._tool_names) > len(shown):
+            lines.insert(0, f"… {len(self._tool_names) - len(shown)} more")
+        text = "\n".join(lines)
+        try:
+            if self._status_msg is None:
+                self._status_msg = await self._msg.reply_text(text)
+            else:
+                await self._status_msg.edit_text(text)
+        except Exception as e:
+            # Progress is cosmetic too — a throttled edit must not cost the answer.
+            logger.debug("Telegram: could not update tool status: %s", e)
+        self._last_status_write = asyncio.get_running_loop().time()
+        self._status_stale = False
 
     async def send_chunk(self, text: str) -> None:
+        self.start_typing()  # safety net for a reply the channel did not start
         self._chunks.append(text)
 
-    # Telegram is a plain-text channel with no side panel: the live-progress
-    # parts of ReplyHandle are accepted and dropped. They must still exist —
-    # the worker calls them unconditionally under /verbose, and a missing one
-    # is an AttributeError that ends the turn as an error.
-    async def send_tool(self, name: str, args: str | None = None) -> None:
-        pass  # Telegram doesn't show tool status
-
+    # Telegram is a plain-text channel with no side panel: the remaining
+    # live-progress parts of ReplyHandle are accepted and dropped. They must
+    # still exist — the worker calls them unconditionally under /verbose, and a
+    # missing one is an AttributeError that ends the turn as an error.
     async def send_tool_result(
         self, name: str, result: str, duration: float | None = None, error: bool = False
     ) -> None:
-        pass
+        pass  # a result can be tens of kilobytes; the tool *name* is the signal
 
     async def send_thinking(self, text: str) -> None:
         pass
@@ -109,16 +206,26 @@ class TelegramReply:
                 logger.warning("Telegram: could not send %s: %s", attachment.path, e)
 
     async def done(self) -> None:
-        text = "".join(self._chunks).strip()
-        if text:
-            for i in range(0, len(text), _MAX_CHARS):
-                await self._msg.reply_text(text[i:i + _MAX_CHARS])
-            await self._attach_named_files(text)
-        self._done_event.set()
+        try:
+            if self._status_stale:
+                # The last tool calls were coalesced away; leave the progress
+                # message showing what actually ran.
+                await self._write_tool_status()
+            text = "".join(self._chunks).strip()
+            if text:
+                for i in range(0, len(text), _MAX_CHARS):
+                    await self._msg.reply_text(text[i:i + _MAX_CHARS])
+                await self._attach_named_files(text)
+        finally:
+            self._stop_typing()
+            self._done_event.set()
 
     async def send_error(self, e: Exception) -> None:
-        await self._msg.reply_text(f"Error: {e}")
-        self._done_event.set()
+        try:
+            await self._msg.reply_text(f"Error: {e}")
+        finally:
+            self._stop_typing()
+            self._done_event.set()
 
     async def wait(self) -> None:
         await self._done_event.wait()
@@ -134,6 +241,10 @@ class TelegramChannel:
     uploads the files that answer names, confined to that directory (the
     gateway passes the state dir, which is also the file tools' sandbox root).
     ``None`` — the default — attaches nothing.
+
+    ``show_tools`` posts the names of the tools a turn calls, in one message
+    edited in place — see ``TelegramReply``. On by default; turn it off for a
+    deployment that wants the chat to carry answers only.
     """
 
     def __init__(
@@ -142,11 +253,13 @@ class TelegramChannel:
         queue: asyncio.Queue,
         allowed_chat_ids: Sequence[int] | None = None,
         attach_root: str | Path | None = None,
+        show_tools: bool = True,
     ):
         self._token = token
         self._queue = queue
         self._allowed_chat_ids = set(allowed_chat_ids or ())
         self._attach_root = Path(attach_root) if attach_root is not None else None
+        self._show_tools = show_tools
 
     @staticmethod
     def _session_key(update: Any) -> str:
@@ -212,7 +325,12 @@ class TelegramChannel:
         text = msg.text.strip()
         prompt = text if text.startswith("/") else f"[{user.first_name}]: {text}"
 
-        reply = TelegramReply(msg, attach_root=self._attach_root)
+        reply = TelegramReply(
+            msg, attach_root=self._attach_root, show_tools=self._show_tools
+        )
+        # Typing starts here, not at the first send: the wait for a queue slot
+        # and the model's first token are exactly the silence being fixed.
+        reply.start_typing()
         await self._queue.put(QueueItem(session_key=session_key, prompt=prompt, reply=reply))
         await reply.wait()
 

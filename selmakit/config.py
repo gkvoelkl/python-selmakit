@@ -42,6 +42,11 @@ class TelegramConfig(BaseModel):
     # send files inside the state dir, and even that is a decision to make
     # deliberately. See selmakit/attachments.py.
     attach_files: bool = False
+    # Post the names of the tools a turn calls, so a multi-minute run is visibly
+    # working instead of silent. One message per turn, edited in place — the Bot
+    # API allows a bot roughly one message per second per chat, and a local model
+    # calls tools far faster than that. See selmakit/channels/telegram.py.
+    show_tools: bool = True
 
 
 class ChannelsConfig(BaseModel):

@@ -338,6 +338,7 @@ class Gateway:
                     # exactly the set of files the agent can have produced —
                     # and the only set it may attach.
                     attach_root=self.context.state_dir if ch.telegram.attach_files else None,
+                    show_tools=ch.telegram.show_tools,
                 ))
             else:
                 logger.warning("Telegram channel enabled but TELEGRAM_TOKEN not set — skipping")

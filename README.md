@@ -231,7 +231,8 @@ The root `gateway.py` and `dashboard.py` in this repo are exactly such reference
     "telegram": {
       "enabled": false,
       "allowed_chat_ids": [],
-      "attach_files": false
+      "attach_files": false,
+      "show_tools": true
     }
   },
   "heartbeat": {
@@ -666,6 +667,22 @@ No agent or prompt change is needed; agents that already report paths start deli
 **It is off by default, and it is confined to `.selmakit/`.** The text being scanned is *model output, not user input* — whatever the model wrote arrives as a plausible-looking path, including one it hallucinated and one a prompt-injected web page talked it into naming. So a path is only ever uploaded when it resolves — `..` collapsed, symlinks followed — inside the state directory, which is also the sandbox root of the agent's own file tools. A path outside it is refused and logged; everything else is silent (a file that doesn't exist is skipped, since an answer may name a file it never wrote). Files over 20 MB get one line saying so rather than a stalled upload, each distinct path is sent once, and a failed upload costs the attachment, not the answer.
 
 Note the flip side of that root: everything under `.selmakit/` is attachable, including `selmakit.json` with any API key in it. Turn this on for chats you would hand those files to.
+
+**Showing that the agent is working — `channels.telegram.show_tools`.** A turn on a local model can take minutes, and until it finishes Telegram shows nothing: no typing hint, no progress, no idea whether the agent is thinking or dead. Two signals fix that, and both are on as soon as the channel is:
+
+- a **`typing…` indicator** for the whole turn. It starts when the message is enqueued — the queue wait and the model's first token are exactly the silence in question — and is refreshed every 4 s, because a chat action expires after about five. It stops when the turn ends, including when it ends with an error.
+- the **names of the tools** as they are called, `show_tools: true` by default:
+
+```
+🔧 osm_features
+🔧 qgis_reproject
+```
+
+```json
+"telegram": { "enabled": true, "allowed_chat_ids": [123456789], "show_tools": false }
+```
+
+**Names only, in one message per turn.** The Bot API throttles a bot to roughly **one message per second per chat**, and edits count against the same budget — a run that calls twenty tools would spend the whole turn being throttled if each call posted a line. So the channel sends *one* progress message and edits it in place, at most once a second, with the calls in between coalescing into the next edit (the last one is always flushed before the answer). Long runs keep the most recent 12 lines plus a `… n more` counter, so the message can't grow towards the 4096-char limit either. Arguments and results are never posted: a single tool result can be tens of kilobytes, and the signal worth having on a phone screen is *which* tool ran.
 
 Other channels get the same delivery primitive: `send_file(path, caption=None)` is part of the `ReplyHandle` protocol, so custom code can push an artefact from any channel. WebChat emits it as a `file` SSE event carrying the local path, which the dashboard renders inline (images) or as a download button — the same "dashboard runs on the gateway's host" assumption it already makes for embedded HTML reports. Deliberately not an HTTP download endpoint: the gateway binds `0.0.0.0` by default.
 
