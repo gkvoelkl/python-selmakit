@@ -418,7 +418,8 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
-[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.30...HEAD
+[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.31...HEAD
+[0.1.31]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.28...v0.1.30
 [0.1.28]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.27...v0.1.28
 [0.1.27]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.26...v0.1.27
