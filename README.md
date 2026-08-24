@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.31](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.33](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -42,7 +42,7 @@ Released versions and what changed in each are listed in the
 | Scheduled proactive turns | `@agent.schedule(every="30m")` decorator |
 | Workspace identity files | `SOUL.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md` |
 | Skills | `SKILL.md` files — loaded on demand as *deferred capabilities* via harness `Skills`; only name + description sit in the prompt, the body arrives through `load_capability` |
-| Filesystem tools | harness `FileSystem(root_dir=".")` — `read_file`/`write_file`/`edit_file`/`list_directory`/`search_files`/`find_files`/`create_directory`/`file_info`, sandboxed to the project directory (traversal rejected, symlinks resolved before authorization) |
+| Filesystem tools | harness `FileSystem(root_dir=<state_dir>)` — `read_file`/`write_file`/`edit_file`/`list_directory`/`search_files`/`find_files`/`create_directory`/`file_info`, sandboxed to `.selmakit/` (traversal rejected, symlinks resolved before authorization) |
 | Web search & fetch | `WebSearch(local="duckduckgo")`, `WebFetch(local=True)` — native on supporting providers, local fallback otherwise |
 | External MCP servers | `McpCapability` — stdio/HTTP servers from `selmakit.json` (standard `mcpServers` shape), per-server `prefix`/`allow_tools`/`require_approval`; connections held open for the gateway's lifetime |
 | Tool approval | Gated MCP tools defer instead of executing; approve/deny via `/approve` `/deny` or the dashboard's ✅/🚫 buttons; auto-denied in unattended (heartbeat/cron) runs |
@@ -229,7 +229,8 @@ The root `gateway.py` and `dashboard.py` in this repo are exactly such reference
       "log_level": "info"
     },
     "telegram": {
-      "enabled": false
+      "enabled": false,
+      "allowed_chat_ids": []
     }
   },
   "heartbeat": {
@@ -637,6 +638,22 @@ SSE event types: `tool`, `chunk`, `error`, `done`.
 
 Wraps `python-telegram-bot` (v20+). Normalizes incoming messages into the shared queue. Group and supergroup chats get isolated sessions (`group:<id>`).
 
+**Access control — `channels.telegram.allowed_chat_ids`.** A list of chat ids allowed to talk to the bot; a message from any other chat is dropped. The check is on the chat id, so a private chat means one person and a group id means everyone in that group — allowing a whole group is a deliberate, supported setup.
+
+```json
+"telegram": { "enabled": true, "allowed_chat_ids": [123456789] }
+```
+
+The default is an empty list, which **accepts messages from anyone who finds the bot** — that is how the channel behaved before this field existed, and it stays the default so an upgrade doesn't lock a running deployment out of its own bot. It is a bad default to keep: a SelmaKit agent has filesystem tools and, depending on the setup, runs local commands, so an unrestricted bot hands a stranger those tools. The channel logs a warning at start while the list is empty.
+
+A dropped message is never answered — a reply would confirm the bot exists to whoever probed it — but it is logged with the rejecting chat id, which is how you find your own:
+
+```
+Telegram: ignored message from chat 123456789 (not in channels.telegram.allowed_chat_ids). Add that id to allow it.
+```
+
+If you don't know your id yet, put a placeholder (e.g. `[0]`) in the list and message the bot — the line above names the id that was dropped.
+
 ---
 
 ## Heartbeat (Proactive Turns)
@@ -739,8 +756,8 @@ and cron — everything only some deployments need is an extra.
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.31.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
-| `pydantic-ai-harness>=0.21.0` | The official capability library — supplies the default `FileSystem` (sandboxed file tools) and `Skills` (deferred skill loading), plus `SubAgents` when enabled |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.33.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai-harness>=0.24.0` | The official capability library — supplies the default `FileSystem` (sandboxed file tools) and `Skills` (deferred skill loading), plus `SubAgents` when enabled |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `httpx` | Async HTTP client |
 | `python-dotenv` | `.env` loading |

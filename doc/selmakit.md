@@ -101,7 +101,7 @@ Capabilities that need an internal object (session store, cron store, …) recei
    The composition root. `Gateway.from_config()` reads config and builds the model, session store, memory and cron store; the constructor resolves capabilities (defaults + `extra_capabilities`, or a `capabilities` list/factory), builds the agent, the enabled channels, the queue and the cron service. `run()`/`serve()` drives everything. The top-level `gateway.py` is just `Gateway.from_config().run()`.
 
 1. **Channels** (`selmakit.channels.WebChatChannel`, `TelegramChannel`)
-   Translate external protocols (SSE, Telegram updates) into `QueueItem(session_key, prompt, reply)` objects. Each is opt-in via the `channels` config section.
+   Translate external protocols (SSE, Telegram updates) into `QueueItem(session_key, prompt, reply)` objects. Each is opt-in via the `channels` config section. Telegram additionally filters on `channels.telegram.allowed_chat_ids` before anything is enqueued — empty means open, which is the pre-existing behaviour and is warned about at start.
 
 2. **Worker** (`Gateway._worker()`)
    Single async loop: `item = await queue.get()` → `agent.run_stream_events(item.prompt, session_key=item.session_key)` → stream events back via `item.reply`.
@@ -395,6 +395,6 @@ selmakit is intentionally **not** trying to be a full agent platform. Things tha
 - **System-prompt content** — SOUL.md, IDENTITY.md, USER.md are user-curated text. selmakit injects them; the user writes them.
 - **Skills** — selmakit discovers them and emits the index. The skill MD files themselves are the user's responsibility.
 - **Tool implementations** — selmakit ships filesystem and web tools. Domain-specific tools (calendar, mail, custom APIs) are added by the user as new capabilities or `tools=` entries.
-- **Channel auth** — Telegram token, optional WebChat auth headers, OAuth flows for external services. Stays in `.env` / project code.
+- **Channel credentials** — Telegram token, optional WebChat auth headers, OAuth flows for external services. Stay in `.env` / project code. (*Authorization* is a different question and does live in config: `channels.telegram.allowed_chat_ids` decides which chats may drive the agent.)
 
 If you find yourself wanting to "configure" something that's really just code, write the code instead. selmakit prefers composable Python over declarative YAML.

@@ -31,6 +31,11 @@ class WebChatConfig(BaseModel):
 
 class TelegramConfig(BaseModel):
     enabled: bool = False  # opt-in; also requires TELEGRAM_TOKEN in the environment
+    # Chat ids allowed to talk to the bot; every other chat is ignored. Empty
+    # means "accept everyone" — that is what the channel did before this field
+    # existed, and tightening it here would lock every running deployment out of
+    # its own bot on upgrade. TelegramChannel warns at start while it is empty.
+    allowed_chat_ids: list[int] = []
 
 
 class ChannelsConfig(BaseModel):

@@ -5,6 +5,63 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.28] — 2026-08-24
+
+### Security
+
+- **The Telegram channel has an access list.** `channels.telegram.allowed_chat_ids`
+  is a list of chat ids allowed to talk to the bot; a message from any other chat
+  is dropped before it reaches the queue. Until now anyone who found the bot could
+  drive the agent — and a SelmaKit agent has filesystem tools and, depending on the
+  deployment, runs local commands, so an unrestricted bot handed a stranger those
+  tools. The check is on `effective_chat.id`, not the user: in a private chat the
+  two coincide, and in a group the chat id is the group, so allowing a whole group
+  stays a supported setup.
+
+  **The default is an empty list, which still accepts everyone** — that is the
+  pre-existing behaviour, and tightening it here would lock every running
+  deployment out of its own bot on upgrade. While the list is empty the channel
+  logs a warning at start naming what is exposed and how to restrict it.
+
+  A rejected message is never answered — a reply confirms the bot exists to
+  whoever probed it — but it is logged with the rejecting chat id, which is the
+  only practical way for an owner to learn their own:
+
+  ```
+  Telegram: ignored message from chat 123456789 (not in
+  channels.telegram.allowed_chat_ids). Add that id to allow it.
+  ```
+
+  If you do not know your id yet, put a placeholder (e.g. `[0]`) in the list and
+  message the bot — that line names the id that was dropped.
+
+### Added
+
+- **A test suite exists**, for the first time: `tests/`, run with
+  `uv run pytest tests/ -q` (`pytest` joins `mypy` and `ruff` in the `dev`
+  dependency group, so a plain `uv sync` installs it; dependency groups are not
+  part of the wheel). It currently covers only the Telegram access list — allowed
+  id reaches the queue, rejected id does not and is never answered, empty list
+  stays permissive, and the start-up warning fires. No async plugin: the tests
+  drive coroutines through `asyncio.run`, and a fake queue completes each item's
+  reply so the handler's `await reply.wait()` returns.
+
+### Changed
+
+- **Minimum `pydantic-ai` raised to 2.33.0 and `pydantic-ai-harness` to 0.24.0.**
+  No source changes were needed — the harness filesystem walkers behave as before
+  (the dot-prefixed-component skip and `max_list_results` cap both survive, only
+  their line numbers moved), and the `anthropic` 1.0 major bump that comes with
+  pydantic-ai is absorbed entirely by pydantic-ai's `AnthropicModel`, so
+  `build_model()`'s provider dispatch is unaffected.
+- `TelegramChannel`'s message handler moved from a closure inside `start()` to a
+  `_handle` method registered on the `MessageHandler`. Same behaviour; it is what
+  makes the access list testable without a bot token or a network.
+- The README described the default `FileSystem` capability as
+  `FileSystem(root_dir=".")` "sandboxed to the project directory". It has been
+  rooted at the state dir (`.selmakit/`) since the harness migration — corrected,
+  since the sentence describes a security boundary.
+
 ## [0.1.27] — 2026-08-18
 
 ### Fixed
@@ -283,7 +340,8 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
-[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.27...HEAD
+[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.28...HEAD
+[0.1.28]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.27...v0.1.28
 [0.1.27]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.26...v0.1.27
 [0.1.26]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.25...v0.1.26
 [0.1.25]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.24...v0.1.25

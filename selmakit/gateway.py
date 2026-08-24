@@ -330,7 +330,11 @@ class Gateway:
         if ch.telegram.enabled:
             token = os.environ.get("TELEGRAM_TOKEN")
             if token:
-                channels.append(TelegramChannel(token=token, queue=self.queue))
+                channels.append(TelegramChannel(
+                    token=token,
+                    queue=self.queue,
+                    allowed_chat_ids=ch.telegram.allowed_chat_ids,
+                ))
             else:
                 logger.warning("Telegram channel enabled but TELEGRAM_TOKEN not set — skipping")
         else:
