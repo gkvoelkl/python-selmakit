@@ -5,6 +5,88 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.33] — 2026-08-31
+
+### Removed
+
+- **The dashboard's Transcript view.** The second history rendering — one row per
+  message part, read from `sessions/<key>.json` — did not earn its keep. It could
+  only show a turn after it had ended, carried no per-tool timing, and cost about
+  fifteen `transcript_mode` branches threaded through the live streaming loop.
+  `selmakit/dashboard/transcript.py` is gone, the sidebar "Ansicht" switch with it,
+  and `DashboardConfig` loses `show_view_switch`, `default_view`, `state_dir` and
+  the `sessions_dir` property.
+
+  The depth it offered now lives in `/verbose`, which unlike the transcript is live.
+  The one thing not carried over is the assembled system prompt split per
+  capability; `/systemprompt` remains the way to inspect it.
+
+  **Breaking for callers that passed the removed fields:** `run(state_dir=…)`,
+  `run(show_view_switch=…)` or `run(default_view=…)` now raise `TypeError`. Drop the
+  argument — nothing replaces it.
+
+### Added
+
+- **`/verbose` reports what a turn cost.** A new `metrics` SSE event closes each
+  verbose turn with token usage, wall-clock duration, request count and the model
+  that actually answered — which a per-session `/model` override can change, so it
+  is worth stating rather than assuming. Rendered as a footer line in the
+  "🔧 Tool-Aktivität" expander.
+
+  Emitted off the `AgentRunResultEvent` that `run_stream_events` now forwards (see
+  below); before that fix the run result never reached the worker at all. Delivery
+  is best-effort: an unexpected result shape is logged at debug and dropped, because
+  an accounting line is never worth failing a turn the user already received.
+
+- **`ReplyHandle.send_metrics(metrics)`**, implemented by `WebChatReply` and a no-op
+  in `TelegramReply` — token accounting is a debugging view, not something a chat
+  wants. Like the other live-progress methods it must still exist: the worker calls
+  it unconditionally under `/verbose`.
+
+- **`Agent.last_validated_output(session_key)`** and the `last_validated_output`
+  session-meta key. A pydantic-ai output validator transforms the run's *output
+  value* and never rewrites the `ModelResponse`, so `sessions/*.json` holds what the
+  model said while the user was shown the validated text. The two are simply
+  different values — no reordering of the save reconciles them — so the validated
+  one is now kept alongside the history. Use the history to debug the model, this
+  key for anything replaying or grading what the user was actually *given*.
+
+### Changed
+
+- **`run_stream_events` forwards `AgentRunResultEvent` instead of swallowing it.**
+  It was captured for finalization and dropped, which left the run result — and with
+  it the validated output — unreachable for every stream consumer. It is now both
+  captured and yielded. A consumer that matches only the event types it handles,
+  like `Gateway._worker`, is unaffected.
+
+- **`/verbose` shows tool results in full, and collapses the long ones.** The
+  forwarded-result cap goes from 800 to 8000 characters — generous rather than
+  unbounded, since a `read_file` over a large file would otherwise push megabytes
+  per call through SSE. Anything over 240 characters collapses behind a `<details>`
+  with a one-line preview. Tool call *arguments* were never truncated and still are
+  not.
+
+- **A retry-prompt is its own entry in the verbose log**, marked `↻ Retry` and never
+  collapsed, instead of an `error` flag on an ordinary result. A `ModelRetry`, a
+  failed output validation or a hallucinated tool name is the line you opened the
+  log to find.
+
+- **Minimum `pydantic-ai` is now 2.34.0** (from 2.33.0). Below it the
+  framework-managed `load_capability` tool was capped at a single retry regardless
+  of the agent's budget — and selmakit sets `retries={"tools": 4}` precisely because
+  smaller local models call a skill's name instead of `load_capability(id=…)`. On
+  2.33 that budget never reached the tool it was meant for, so `/skill` still died
+  on the second fumble.
+
+### Fixed
+
+- **A completed turn could be lost if the stream consumer raised.** `_finalize_run`
+  ran after the `yield` in `run_stream_events` with no `finally`, so an exception
+  from the consumer was thrown in at that point and skipped persistence entirely —
+  history unsaved and a stale `pending_approvals` left behind. It now runs in a
+  `finally`. A stream abandoned before its result genuinely has nothing to persist,
+  but that is logged as a warning rather than passing silently.
+
 ## [0.1.32] — 2026-08-24
 
 ### Added
@@ -456,7 +538,8 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
-[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.32...HEAD
+[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.33...HEAD
+[0.1.33]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.32...v0.1.33
 [0.1.32]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.28...v0.1.30

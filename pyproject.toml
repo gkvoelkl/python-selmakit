@@ -1,6 +1,6 @@
 [project]
 name = "selmakit"
-version = "0.1.32"
+version = "0.1.33"
 description = "Minimal multi-channel agent framework built on pydantic-ai"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -35,7 +35,12 @@ dependencies = [
     # `tracing.enabled` is set. See selmakit/tracing.py.
     "fastapi>=0.135.1",
     "pydantic>=2.12.5",
-    "pydantic-ai[duckduckgo,web-fetch]>=2.33.0",
+    # 2.34.0 floor: before it, the framework-managed `load_capability` tool was
+    # capped at one retry regardless of the agent's budget. selmakit sets
+    # retries={"tools": 4} (agent.py) precisely because small local models call a
+    # skill's name instead of load_capability(id=…) — on 2.33 that budget did not
+    # reach the tool it was meant for and /skill still died on the second fumble.
+    "pydantic-ai[duckduckgo,web-fetch]>=2.34.0",
     # Core since the default capability set uses the harness FileSystem
     # (sandboxed file tools) and Skills (deferred skill loading).
     "pydantic-ai-harness>=0.24.0",

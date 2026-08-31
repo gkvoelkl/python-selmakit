@@ -400,6 +400,7 @@ class Gateway:
     # ---------------------------------------------------------------- worker
 
     async def _worker(self) -> None:
+        from pydantic_ai import AgentRunResultEvent
         from pydantic_ai.messages import (
             FunctionToolCallEvent, FunctionToolResultEvent, PartDeltaEvent, PartStartEvent,
             TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta,
@@ -408,6 +409,7 @@ class Gateway:
             item: QueueItem = await self.queue.get()
             verbose = bool(self.context.session_store.get_meta(item.session_key, "verbose", False))
             call_started: dict[str, float] = {}  # tool_call_id -> monotonic start time
+            turn_started = asyncio.get_running_loop().time()
             try:
                 async with self.agent.run_stream_events(item.prompt, session_key=item.session_key) as (is_cmd, value):
                     if is_cmd:
@@ -432,6 +434,10 @@ class Gateway:
                             elif verbose and isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta):
                                 if event.delta.content_delta:
                                     await item.reply.send_thinking(event.delta.content_delta)
+                            elif verbose and isinstance(event, AgentRunResultEvent):
+                                # The run is over: report what it cost. Reachable
+                                # because run_stream_events forwards this event.
+                                await self._forward_metrics(item.reply, event.result, turn_started)
                 # If the turn ended awaiting approval for gated (MCP) tool calls,
                 # surface them so the user can /approve or /deny (buttons in the UI).
                 pending = self.context.session_store.get_meta(item.session_key, "pending_approvals", None)
@@ -444,7 +450,10 @@ class Gateway:
                 self.queue.task_done()
 
     # Longest tool result forwarded to the webchat verbose log; longer is truncated.
-    _VERBOSE_RESULT_LIMIT = 800
+    # Generous rather than unbounded: the dashboard collapses anything long behind
+    # a <details>, so the old 800 only ever hid detail — but a `read_file` over a
+    # large file would otherwise push megabytes through the SSE stream per call.
+    _VERBOSE_RESULT_LIMIT = 8000
 
     async def _forward_tool_call(self, reply, part, verbose: bool, call_started: dict) -> None:
         """Forward a tool call to the reply. In verbose mode include the args
@@ -460,15 +469,45 @@ class Gateway:
             await reply.send_tool(part.tool_name)
 
     async def _forward_tool_result(self, reply, part, call_started: dict) -> None:
-        """Forward a tool result (← name: …) with duration and error flag."""
+        """Forward a tool result (← name: …) with duration and error flag.
+
+        A ``retry-prompt`` part is not a failed tool so much as the model being
+        sent back to try again — a ModelRetry, a validation failure, a name that
+        is not a tool. Those are the interesting ones when a turn goes sideways,
+        so they are flagged rather than folded in with ordinary results.
+        """
         started = call_started.pop(part.tool_call_id, None)
         duration = asyncio.get_running_loop().time() - started if started is not None else None
         is_error = getattr(part, "part_kind", None) == "retry-prompt"
         content = part.model_response() if is_error else part.content
         result = content if isinstance(content, str) else str(content)
         if len(result) > self._VERBOSE_RESULT_LIMIT:
-            result = result[: self._VERBOSE_RESULT_LIMIT] + f"… ({len(result)} chars)"
+            result = result[: self._VERBOSE_RESULT_LIMIT] + f"\n… truncated, {len(result)} chars total"
         await reply.send_tool_result(part.tool_name, result, duration=duration, error=is_error)
+
+    async def _forward_metrics(self, reply, result, turn_started: float) -> None:
+        """Forward end-of-turn accounting: tokens, duration and answering model.
+
+        Best-effort — a metrics line is never worth failing a delivered turn over,
+        so an unexpected result shape is dropped rather than raised.
+        """
+        try:
+            usage = getattr(result, "usage", None)
+            model_name = None
+            for message in reversed(result.all_messages()):
+                if getattr(message, "model_name", None):
+                    model_name = message.model_name
+                    break
+            await reply.send_metrics({
+                "input_tokens": getattr(usage, "input_tokens", None),
+                "output_tokens": getattr(usage, "output_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+                "requests": getattr(usage, "requests", None),
+                "duration": asyncio.get_running_loop().time() - turn_started,
+                "model": model_name,
+            })
+        except Exception as e:  # noqa: BLE001 — accounting must not break the turn
+            logger.debug("metrics forwarding skipped | error=%s", e)
 
     # ------------------------------------------------------------------- run
 

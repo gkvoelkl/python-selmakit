@@ -61,6 +61,7 @@ A flat JSON object. Missing file → treated as `{}`. Known keys:
 | `verbose` | bool | `/verbose on\|off` command | `Gateway._worker`, `/status` | When true, the webchat stream surfaces tool calls (`→ name(args)`), results (`← name: …`), tool errors, per-tool timing and reasoning deltas. Absent ⇒ off. |
 | `pending_approvals` | list of `{tool_call_id, tool_name, args}` \| null | `Agent._finalize_run` (set when a turn defers, cleared otherwise) | `Gateway._worker` (emits `approval` event), `Agent._prepare_approval_resume`, `/status` | Gated MCP tool calls awaiting `/approve` or `/deny`. Present ⇒ the last turn ended in a `DeferredToolRequests`. See CLAUDE.md "Tool approval". |
 | `last_system_prompt` | string | after each **user** turn | `/systemprompt`, `Agent.last_system_prompt()` | The instructions string as last actually sent to the model. |
+| `last_validated_output` | string | `Agent._finalize_run`, when the turn ended in text | `Agent.last_validated_output()` | The final output **after** output validators — what the user was given, which the message history does not hold. See [below](#last_validated_output). |
 | `model_override` | string | `/model <name>`, dashboard model selector | `Agent._resolve_run_model()`, `/model`, `/status` | Per-session live model switch. Consumed by the run loop: `_prepare_run` passes the built model as pydantic-ai's per-run `model=`. Interactive turns only — heartbeat/cron/compaction runs always use the base model. See CLAUDE.md "Live model switching". |
 | `session_type` | `user`/`schedule` | schedule runner (sets `schedule` on isolated sessions) | `list_sessions()`, cron/schedule targeting | Distinguishes user chats from scheduled/heartbeat sessions. Defaults to `user` when absent. |
 
@@ -88,6 +89,31 @@ Both return `None` / a "send a message first" hint before the session's first
 LLM turn. **Only user turns update the cache** — heartbeat, cron, and compaction
 runs bypass these entry points by design, so `/systemprompt` reflects the
 interactive session, not an isolated background run.
+
+### `last_validated_output`
+
+`<session_key>.json` holds **what the model said**. When an
+[`@agent.output_validator`](../CLAUDE.md) rewrites or annotates the answer, that
+is *not* what the user was given: a pydantic-ai output validator transforms the
+run's output value and never writes back into the message history, so the
+`ModelResponse` keeps the unvalidated text. This is by design upstream, and no
+amount of reordering the save changes it — the two simply are different values.
+
+So `_finalize_run` stores the validated output alongside the history:
+
+- **The history** answers "what did the model produce?" — the right basis for
+  replaying a run or debugging the model.
+- **This key** answers "what did the user actually read?" — the right basis for
+  a trace reader, a run log, or an LLM judge grading the delivered answer.
+
+Read it with `agent.last_validated_output(session_key="default") -> str | None`.
+It is `None` before the first LLM turn and for a turn that ended awaiting tool
+approval (a `DeferredToolRequests` output is not text). With no validator
+registered it simply equals the final text, so consumers need no special case.
+
+Stream consumers can also take the value straight from the run: since
+`run_stream_events` forwards `AgentRunResultEvent`, `event.result.output` carries
+the validated output live, without waiting for the turn to be persisted.
 
 ## Stale detection & auto-reset (`is_fresh`)
 

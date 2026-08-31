@@ -12,6 +12,7 @@ whole app, so it must be the first Streamlit call in the script.
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -23,14 +24,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from selmakit.dashboard.config import DashboardConfig
-from selmakit.dashboard.transcript import (
-    build_rows,
-    load_session_messages,
-    next_turn,
-    render_transcript,
-    text_row,
-    tool_row,
-)
 
 # Matches local .html references in a reply: bare paths, file:// URLs or
 # markdown links. Captures the path part so it can be read from disk.
@@ -38,9 +31,6 @@ _HTML_REF_RE = re.compile(r"(?:file://)?(/?[\w./\-]+\.html)\b", re.IGNORECASE)
 
 # Curated hosted models selmakit's build_model() can dispatch on (provider/model).
 # Extend freely — the string is written verbatim into selmakit.json's model.model.
-# The two history renderings the sidebar switches between.
-_VIEWS: List[str] = ["Chat", "Transcript"]
-
 _COMMERCIAL_MODELS: List[str] = [
     "anthropic/claude-opus-4-8",
     "anthropic/claude-sonnet-4-6",
@@ -187,15 +177,111 @@ def render_attachments(files: List[dict], key_prefix: str = "live") -> None:
         )
 
 
-def render_tool_activity(target: Any, lines: List[str]) -> None:
-    """Render the verbose tool-activity log (→ calls, ← results, 💭 thinking)
-    into ``target`` (an ``st.empty()`` placeholder), collapsible so it stays out
-    of the way of the actual reply. No-op when there is nothing to show."""
-    if not lines:
+# A tool result longer than this is collapsed behind a <details> rather than
+# shown inline — long enough that ordinary one-line results stay readable at a
+# glance, short enough that a file dump does not bury the rest of the log.
+_RESULT_INLINE_LIMIT = 240
+
+
+def _entry_html(entry: Dict[str, Any]) -> str:
+    """One verbose log entry as HTML.
+
+    Built as HTML, not markdown, for the reason the codebase already learned the
+    hard way: tool args and results are arbitrary text, and running them through
+    the markdown parser turns stray backticks and ``**`` into code spans and bold.
+    """
+    kind = entry.get("kind")
+    if kind == "call":
+        args = html.escape(entry.get("args") or "")
+        name = html.escape(entry.get("name", "tool"))
+        return f'<div class="sk-call">→ <b>{name}</b>(<code>{args}</code>)</div>'
+
+    if kind == "result":
+        name = html.escape(entry.get("name", "tool"))
+        result = entry.get("result") or ""
+        dur = entry.get("duration")
+        meta = f" <span class='sk-dim'>({dur:.2f}s)</span>" if isinstance(dur, (int, float)) else ""
+        if entry.get("error"):
+            # A retry-prompt: the model was sent back to try again. Never collapsed
+            # — this is the line you opened the log to find.
+            return (
+                f'<div class="sk-retry">↻ <b>{name}</b>{meta} — <i>Retry</i>'
+                f'<pre>{html.escape(result)}</pre></div>'
+            )
+        body = html.escape(result)
+        if len(result) > _RESULT_INLINE_LIMIT:
+            head = html.escape(result[:_RESULT_INLINE_LIMIT].rstrip())
+            return (
+                f'<details class="sk-result"><summary>← <b>{name}</b>{meta} '
+                f'<span class="sk-dim">{len(result)} Zeichen</span> — {head}…</summary>'
+                f'<pre>{body}</pre></details>'
+            )
+        return f'<div class="sk-result">← <b>{name}</b>{meta}: <code>{body}</code></div>'
+
+    if kind == "thinking":
+        return f'<details class="sk-think"><summary>💭 Reasoning</summary><pre>{html.escape(entry.get("text", ""))}</pre></details>'
+
+    if kind == "approval":
+        names = ", ".join(str(p.get("tool_name", "?")) for p in entry.get("pending", []))
+        return f'<div class="sk-approval">🔐 Freigabe angefordert: <b>{html.escape(names)}</b></div>'
+
+    return ""
+
+
+def _metrics_html(metrics: Dict[str, Any] | None) -> str:
+    """The end-of-turn accounting line, or '' when the turn reported none."""
+    if not metrics:
+        return ""
+    bits: List[str] = []
+    if metrics.get("model"):
+        bits.append(f"🤖 {html.escape(str(metrics['model']))}")
+    dur = metrics.get("duration")
+    if isinstance(dur, (int, float)):
+        bits.append(f"⏱ {dur:.2f}s")
+    tin, tout = metrics.get("input_tokens"), metrics.get("output_tokens")
+    if tin is not None or tout is not None:
+        bits.append(f"🔤 {tin or 0} → {tout or 0} ({metrics.get('total_tokens') or 0} total)")
+    if metrics.get("requests"):
+        bits.append(f"📡 {metrics['requests']} Anfrage(n)")
+    return f'<div class="sk-metrics">{" &nbsp;·&nbsp; ".join(bits)}</div>' if bits else ""
+
+
+_ACTIVITY_CSS = """
+<style>
+.sk-log { font-size: 0.86rem; line-height: 1.55; }
+.sk-log pre { white-space: pre-wrap; word-break: break-word; margin: .35em 0 .1em 1.2em;
+              font-size: .82rem; opacity: .85; max-height: 22em; overflow: auto; }
+.sk-log code { word-break: break-all; }
+.sk-log summary { cursor: pointer; }
+.sk-dim { opacity: .6; }
+.sk-retry { border-left: 3px solid #d9822b; padding-left: .5em; margin: .2em 0; }
+.sk-approval { border-left: 3px solid #c94f4f; padding-left: .5em; margin: .2em 0; }
+.sk-metrics { margin-top: .6em; padding-top: .4em; border-top: 1px solid rgba(128,128,128,.3);
+              font-size: .82rem; opacity: .8; }
+</style>
+"""
+
+
+def render_tool_activity(
+    target: Any,
+    entries: List[Dict[str, Any]],
+    metrics: Dict[str, Any] | None = None,
+    key_prefix: str = "",
+) -> None:
+    """Render the verbose log (→ calls, ← results, ↻ retries, 💭 reasoning) plus
+    the turn's accounting into ``target`` (an ``st.empty()`` placeholder).
+
+    Collapsible as a whole so it stays out of the way of the reply, and long
+    results collapse individually inside it. Note the inner collapsibles are
+    ``<details>`` rather than nested ``st.expander``s — Streamlit refuses to nest
+    those. No-op when there is nothing to show.
+    """
+    if not entries and not metrics:
         return
+    body = "".join(_entry_html(e) for e in entries) + _metrics_html(metrics)
     with target.container():
         with st.expander("🔧 Tool-Aktivität", expanded=True):
-            st.markdown("\n".join(lines))
+            st.html(_ACTIVITY_CSS + f'<div class="sk-log">{body}</div>')
 
 
 def render_approval(pending: List[dict]) -> None:
@@ -246,10 +332,6 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
-
-    # Seeds the keyed radio below; an unknown default_view would make it raise.
-    if st.session_state.get("view_mode") not in _VIEWS:
-        st.session_state.view_mode = cfg.default_view if cfg.default_view in _VIEWS else _VIEWS[0]
 
     # -- Settings Dialog
     @st.dialog("⚙️ Settings", width="large")
@@ -308,20 +390,6 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
     st.sidebar.header(cfg.title)
     if cfg.image:
         st.sidebar.image(cfg.image, width=200)
-
-    # -- View switch: the chat bubbles, or the flat per-message transcript.
-    # Keyed on "view_mode" so Streamlit owns the state; passing an explicit
-    # index instead would reset the widget from the previous value each rerun.
-    if cfg.show_view_switch:
-        st.sidebar.radio(
-            "Ansicht",
-            _VIEWS,
-            key="view_mode",
-            horizontal=True,
-            help="Transcript zeigt den persistierten Verlauf zeilenweise "
-                 "(System-Prompt, Kontext, Tool-Aufrufe mit Ergebnis).",
-        )
-    transcript_mode = st.session_state.view_mode == "Transcript"
 
     if cfg.show_settings:
         if st.sidebar.button("⚙️ Settings"):
@@ -383,37 +451,26 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
 
     poll_alerts()
 
-    # -- History. The transcript reads the persisted session instead of the
-    # in-memory chat log, so it also shows what the stream never carried:
-    # the assembled system prompt, the injected context, and tool results
-    # paired with their calls. Approvals still render from the chat log —
-    # a pending decision only exists in this browser session.
+    # -- History, from the in-memory chat log.
     last_idx = len(st.session_state.messages) - 1
-    persisted_rows: List[Any] = []
-    if transcript_mode:
-        persisted_rows = build_rows(load_session_messages(cfg.sessions_dir, st.session_state.user_id))
-        render_transcript(persisted_rows)
-        if last_idx >= 0:
-            last = st.session_state.messages[last_idx]
-            if last["role"] == "assistant" and last.get("pending_approval"):
-                render_approval(last["pending_approval"])
-    else:
-        for idx, message in enumerate(st.session_state.messages):
-            if message["role"] == "notification":
-                st.warning(f"🔔 {message['content']}")
-            elif message["role"] == "cron":
-                st.info(f"⏰ {message['content']}")
-            else:
-                with st.chat_message(message["role"]):
-                    if message["role"] == "assistant" and message.get("tool_activity"):
-                        render_tool_activity(st.empty(), message["tool_activity"])
-                    st.markdown(message["content"])
-                    if message["role"] == "assistant":
-                        render_html_files(message["content"])
-                        render_attachments(message.get("attachments", []), key_prefix=f"msg{idx}")
-                        # Only the most recent message can still await a decision.
-                        if message.get("pending_approval") and idx == last_idx:
-                            render_approval(message["pending_approval"])
+    for idx, message in enumerate(st.session_state.messages):
+        if message["role"] == "notification":
+            st.warning(f"🔔 {message['content']}")
+        elif message["role"] == "cron":
+            st.info(f"⏰ {message['content']}")
+        else:
+            with st.chat_message(message["role"]):
+                if message["role"] == "assistant" and message.get("tool_activity"):
+                    render_tool_activity(
+                        st.empty(), message["tool_activity"], message.get("turn_metrics"), key_prefix=f"msg{idx}"
+                    )
+                st.markdown(message["content"])
+                if message["role"] == "assistant":
+                    render_html_files(message["content"])
+                    render_attachments(message.get("attachments", []), key_prefix=f"msg{idx}")
+                    # Only the most recent message can still await a decision.
+                    if message.get("pending_approval") and idx == last_idx:
+                        render_approval(message["pending_approval"])
 
     # A queued /approve or /deny (from the approval buttons) takes precedence
     # over freshly typed input; both drive an identical streamed turn.
@@ -422,28 +479,10 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
     if prompt:
         display = {"/approve": "✅ Freigegeben", "/deny": "🚫 Abgelehnt"}.get(prompt, prompt)
         st.session_state.messages.append({"role": "user", "content": display})
-        # In transcript mode the live turn is drawn as transcript rows in the
-        # same grid, appended under the persisted ones. Without that the running
-        # turn rendered as loose left-aligned text and visibly jumped into the
-        # grid when the rerun below replaced it with the saved version.
-        live_turn = next_turn(persisted_rows) if transcript_mode else None
-        live_box = st.empty() if transcript_mode else None
-        live_rows: List[Any] = []
+        with st.chat_message("user"):
+            st.markdown(display)
 
-        def paint_live() -> None:
-            """Redraw the in-flight turn's rows into the placeholder."""
-            if live_box is not None:
-                with live_box.container():
-                    render_transcript(live_rows)
-
-        if transcript_mode:
-            live_rows.append(text_row("USER", display, turn=live_turn))
-            paint_live()
-        else:
-            with st.chat_message("user"):
-                st.markdown(display)
-
-        with (st.container() if transcript_mode else st.chat_message("assistant")):
+        with st.chat_message("assistant"):
             try:
                 payload = {
                     "user_id": st.session_state.user_id,
@@ -454,27 +493,14 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                 tool_status = st.empty()
                 reply_box = st.empty()
                 full_reply = ""
-                activity_lines: List[str] = []   # persistent verbose log (→/←)
-                thinking_buf = ""                 # accumulated reasoning deltas
-                pending_approval: List[dict] = []  # gated tool calls awaiting a decision
-                attachments: List[dict] = []       # files delivered via send_file
+                activity: List[Dict[str, Any]] = []  # verbose log entries, in order
+                thinking_idx: int | None = None      # index of the open reasoning entry
+                turn_metrics: Dict[str, Any] = {}    # end-of-turn accounting
+                pending_approval: List[dict] = []    # gated tool calls awaiting a decision
+                attachments: List[dict] = []         # files delivered via send_file
 
-                def _activity() -> List[str]:
-                    lines = list(activity_lines)
-                    if thinking_buf.strip():
-                        lines.append("> 💭 " + thinking_buf.strip().replace("\n", "\n> "))
-                    return lines
-
-                def _live_reply(text: str) -> None:
-                    """Keep the trailing ASSISTANT row in sync with the stream."""
-                    if not transcript_mode:
-                        return
-                    row = text_row("ASSISTANT", text, turn=None)
-                    if live_rows and live_rows[-1].kind == "ASSISTANT":
-                        live_rows[-1] = row
-                    else:
-                        live_rows.append(row)
-                    paint_live()
+                def repaint() -> None:
+                    render_tool_activity(activity_box, activity, turn_metrics or None)
 
                 with httpx.Client() as client:
                     with client.stream("POST", cfg.stream_url, json=payload, timeout=cfg.stream_timeout) as response:
@@ -483,79 +509,61 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                                 case "tool":
                                     name = event.get("name", "tool")
                                     args = event.get("args")
-                                    if transcript_mode:
-                                        live_rows.append(tool_row(name, args or "", turn=None))
-                                        paint_live()
-                                    elif args is not None:
-                                        activity_lines.append(f"→ **{name}**(`{args}`)")
-                                        render_tool_activity(activity_box, _activity())
-                                    else:
+                                    if args is not None:   # verbose: log it
+                                        activity.append({"kind": "call", "name": name, "args": args})
+                                        repaint()
+                                    else:                  # quiet mode: a passing caption
                                         tool_status.caption(f"🔧 {name}…")
                                 case "tool_result":
-                                    name = event.get("name", "tool")
-                                    dur = event.get("duration")
-                                    dur_s = f" ({dur:.2f}s)" if isinstance(dur, (int, float)) else ""
-                                    mark = "⚠️ ←" if event.get("error") else "←"
-                                    if transcript_mode:
-                                        # Fold the result into the matching call row.
-                                        for i in range(len(live_rows) - 1, -1, -1):
-                                            r = live_rows[i]
-                                            if r.kind == "TOOL" and r.mono.startswith(name) and not r.result:
-                                                args_only = r.mono[len(name):].strip()
-                                                live_rows[i] = tool_row(
-                                                    name, args_only, str(event.get("result", "")),
-                                                    error=bool(event.get("error")), turn=r.turn,
-                                                )
-                                                break
-                                        paint_live()
-                                    else:
-                                        activity_lines.append(
-                                            f"{mark} **{name}**{dur_s}:\n```\n{event.get('result', '')}\n```"
-                                        )
-                                        render_tool_activity(activity_box, _activity())
+                                    activity.append({
+                                        "kind": "result",
+                                        "name": event.get("name", "tool"),
+                                        "result": str(event.get("result", "")),
+                                        "duration": event.get("duration"),
+                                        "error": bool(event.get("error")),
+                                    })
+                                    repaint()
                                 case "thinking":
-                                    thinking_buf += event.get("text", "")
-                                    if transcript_mode:
-                                        row = text_row("THINKING", thinking_buf, turn=None)
-                                        if live_rows and live_rows[-1].kind == "THINKING":
-                                            live_rows[-1] = row
-                                        else:
-                                            live_rows.append(row)
-                                        paint_live()
-                                    else:
-                                        render_tool_activity(activity_box, _activity())
+                                    # Deltas accumulate into one entry so reasoning
+                                    # stays a single collapsible, not one per token.
+                                    if thinking_idx is None:
+                                        thinking_idx = len(activity)
+                                        activity.append({"kind": "thinking", "text": ""})
+                                    activity[thinking_idx]["text"] += event.get("text", "")
+                                    repaint()
+                                case "metrics":
+                                    turn_metrics = {k: v for k, v in event.items() if k != "type"}
+                                    repaint()
                                 case "approval":
                                     pending_approval = event.get("pending", []) or []
+                                    activity.append({"kind": "approval", "pending": pending_approval})
+                                    repaint()
                                 case "file":
                                     attachments.append(event)
                                 case "chunk":
                                     tool_status.empty()
+                                    thinking_idx = None    # answer started; close the reasoning entry
                                     full_reply += event.get("text", "")
-                                    if transcript_mode:
-                                        _live_reply(full_reply)
-                                    else:
-                                        reply_box.markdown(full_reply + "▌")
+                                    reply_box.markdown(full_reply + "▌")
                                 case "error":
                                     tool_status.empty()
                                     raise RuntimeError(event.get("message", "Unknown error."))
                                 case "done":
                                     tool_status.empty()
-                                    if not transcript_mode:
-                                        reply_box.markdown(full_reply)
+                                    reply_box.markdown(full_reply)
 
                 render_html_files(full_reply)
                 render_attachments(attachments)
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": full_reply,
-                    "tool_activity": _activity(),
+                    "tool_activity": activity,
+                    "turn_metrics": turn_metrics,
                     "pending_approval": pending_approval,
                     "attachments": attachments,
                 })
                 # Rerun so the approval buttons render for the new last message.
-                # In transcript mode always rerun: the turn is now persisted, so
-                # the view can rebuild itself from the session file.
-                if pending_approval or transcript_mode:
+                if pending_approval:
                     st.rerun()
             except httpx.ConnectError:
                 st.error("❌ Gateway unreachable. Is `gateway.py` running?")

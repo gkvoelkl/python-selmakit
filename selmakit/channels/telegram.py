@@ -168,6 +168,9 @@ class TelegramReply:
     async def send_thinking(self, text: str) -> None:
         pass
 
+    async def send_metrics(self, metrics: dict) -> None:
+        pass  # token accounting is a debugging view, not something a chat wants
+
     async def send_approval(self, pending: list) -> None:
         """Ask for approval in text — Telegram has no ✅/🚫 buttons wired.
 

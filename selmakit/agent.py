@@ -192,6 +192,20 @@ class Agent:
             return None
         return self._session_store.get_meta(session_key, "last_system_prompt")
 
+    def last_validated_output(self, session_key: str = "default") -> str | None:
+        """The last turn's final output *after* output validators, or None.
+
+        The persisted message history holds what the model said; a validator
+        changes the run's output value without rewriting that history, so the two
+        differ whenever a validator rewrites or annotates the answer. Read this
+        when you need what the user was actually given — a trace reader, a judge,
+        a run log. Returns None before the session's first LLM turn, and for a
+        turn that ended awaiting tool approval rather than in text.
+        """
+        if not self._session_store:
+            return None
+        return self._session_store.get_meta(session_key, "last_validated_output")
+
     @staticmethod
     def _extract_instructions(messages: list) -> str | None:
         """Pull the rendered instructions string from the latest request that has one."""
@@ -467,7 +481,15 @@ class Agent:
 
     def _finalize_run(self, session_key: str, result: Any) -> None:
         """Persist messages + last-system-prompt and record/clear pending approvals."""
-        if not self._session_store or result is None:
+        if not self._session_store:
+            return
+        if result is None:
+            # No AgentRunResultEvent reached us: the consumer abandoned the stream
+            # before it ended. Nothing to persist — but the turn *did* run, so say
+            # so rather than dropping it silently.
+            logger.warning(
+                "Run not finalized, stream abandoned before its result | session=%s", session_key
+            )
             return
         messages = result.all_messages()
         self._session_store.save(session_key, messages)
@@ -475,6 +497,13 @@ class Agent:
         instr = self._extract_instructions(messages)
         if instr:
             self._session_store.set_meta(session_key, "last_system_prompt", instr)
+        # The validated output, which is *not* recoverable from `messages`: an
+        # output validator transforms the run's output value and never rewrites
+        # the ModelResponse, so the persisted history holds what the model said
+        # and this key holds what the user was actually given.
+        output = getattr(result, "output", None)
+        if isinstance(output, str):
+            self._session_store.set_meta(session_key, "last_validated_output", output)
         self._session_store.set_meta(session_key, "pending_approvals", self._extract_pending_approvals(result))
 
     async def _prepare_approval_resume(
@@ -657,6 +686,12 @@ class Agent:
         approval-gated tool call), the pending approvals are recorded in the
         session meta; the caller surfaces them and a later /approve or /deny
         resumes the run. Passing /approve or /deny here IS that resume.
+
+        ``AgentRunResultEvent`` is captured *and* forwarded: capturing it is how
+        this method finalizes the run, forwarding it is how a caller reaches the
+        run result — and with it the **validated** output, which output
+        validators produce but never write back into the message history. A
+        caller that only matches the event types it handles is unaffected.
         """
         from pydantic_ai import AgentRunResultEvent
 
@@ -675,9 +710,12 @@ class Agent:
                 async for event in stream:
                     if isinstance(event, AgentRunResultEvent):
                         final_result = event.result
-                    else:
-                        yield event
+                    yield event
 
-        yield False, _event_gen()
-
-        self._finalize_run(session_key, final_result)
+        try:
+            yield False, _event_gen()
+        finally:
+            # `finally`, because an exception raised by the consumer mid-stream is
+            # thrown in at the `yield` above: without it the turn is lost entirely
+            # — history unsaved and a stale `pending_approvals` left behind.
+            self._finalize_run(session_key, final_result)

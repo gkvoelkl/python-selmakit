@@ -58,6 +58,10 @@ class WebChatReply:
         """Emit an approval request for gated tool calls awaiting /approve or /deny."""
         await self._queue.put({"type": "approval", "pending": pending})
 
+    async def send_metrics(self, metrics: dict) -> None:
+        """Emit end-of-turn accounting (tokens, duration, model). /verbose only."""
+        await self._queue.put({"type": "metrics", **metrics})
+
     async def send_file(self, path: str, caption: str | None = None) -> None:
         """Deliver an artefact as a ``file`` event carrying its local path.
 
