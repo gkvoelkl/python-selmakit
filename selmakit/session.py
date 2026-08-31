@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -6,6 +7,49 @@ from pydantic import TypeAdapter
 from pydantic_ai.messages import ModelMessage
 
 _adapter: TypeAdapter[list[ModelMessage]] = TypeAdapter(list[ModelMessage])
+
+
+def session_file(sessions_dir: str | os.PathLike[str], session_key: str) -> Path:
+    """Path of a session's message file — the layout `JsonlStore` writes."""
+    return Path(sessions_dir) / f"{session_key}.json"
+
+
+def session_meta_file(sessions_dir: str | os.PathLike[str], session_key: str) -> Path:
+    """Path of a session's metadata file."""
+    return Path(sessions_dir) / f"{session_key}.meta.json"
+
+
+def load_session_messages(
+    sessions_dir: str | os.PathLike[str], session_key: str
+) -> list[dict]:
+    """Read a session's persisted messages as plain dicts (``[]`` when absent).
+
+    The supported way to read a session file from outside the gateway — trace
+    readers, benchmarks, graders. Dicts rather than `ModelMessage` objects on
+    purpose: a reader wants a handful of fields and should not break when the
+    message schema gains a part type. Use `JsonlStore.load` when you want the
+    validated objects.
+
+    Reading the file directly works today and will keep working until it does
+    not; going through here means a layout change breaks the call site instead
+    of the analysis built on it.
+    """
+    path = session_file(sessions_dir, session_key)
+    try:
+        data = json.loads(path.read_bytes())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def load_session_meta(sessions_dir: str | os.PathLike[str], session_key: str) -> dict:
+    """Read a session's metadata (``{}`` when absent) — the companion of
+    `load_session_messages` for keys like ``last_validated_output``."""
+    try:
+        data = json.loads(session_meta_file(sessions_dir, session_key).read_bytes())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 class JsonlStore:

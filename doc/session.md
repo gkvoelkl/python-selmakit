@@ -50,6 +50,28 @@ Lifecycle:
 - `save(session_key, messages)` — full overwrite with `all_messages()` from the run.
 - `clear(session_key)` — deletes the `.json` only (history reset), leaving meta.
 
+### Reading session files from outside the gateway
+
+Trace readers, benchmarks and graders want the same files without constructing
+a `JsonlStore` (which creates the directory and carries reset policy it has no
+use for). Four module-level functions in `selmakit.session`, re-exported at the
+package root, are the supported entry:
+
+| Function | Returns |
+|---|---|
+| `load_session_messages(sessions_dir, session_key)` | The messages as **plain dicts**; `[]` when the file is missing or unreadable. |
+| `load_session_meta(sessions_dir, session_key)` | The metadata dict; `{}` when missing or unreadable. |
+| `session_file(sessions_dir, session_key)` | `Path` of the message file. |
+| `session_meta_file(sessions_dir, session_key)` | `Path` of the metadata file. |
+
+Dicts, not `ModelMessage` objects, on purpose: a reader wants a handful of
+fields and should keep working when the message schema gains a part type. Use
+`JsonlStore.load()` when you want the validated objects instead.
+
+Opening `sessions/<key>.json` by hand works and will keep working until it does
+not — the point of going through these is that a layout change then breaks the
+*call*, which an import or a test catches, rather than the analysis built on it.
+
 ## Metadata file (`<session_key>.meta.json`)
 
 A flat JSON object. Missing file → treated as `{}`. Known keys:

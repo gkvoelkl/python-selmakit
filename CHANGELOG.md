@@ -5,6 +5,36 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.34] — 2026-08-31
+
+### Added
+
+- **A supported reader for session files.** `selmakit.session` gains
+  `load_session_messages(sessions_dir, session_key)` and `load_session_meta`, plus
+  `session_file` / `session_meta_file` for the paths; all four are re-exported at
+  the package root. Consumers outside the gateway — trace readers, benchmarks,
+  LLM judges — were opening `sessions/<key>.json` themselves, one `os.path.join`
+  per call site, which is a dependency on the file layout that no import reports
+  when it breaks. The function existed until 0.1.32 inside the removed
+  `dashboard/transcript.py`; this is the same one, made public.
+
+  It returns plain dicts rather than `ModelMessage` objects, deliberately: a
+  reader wants a handful of fields and should not break when the message schema
+  gains a part type. `JsonlStore.load()` still gives the validated objects. A
+  missing or damaged file reads as `[]` / `{}`.
+
+### Changed
+
+- **A cancelled run is no longer reported as a lost one.** `run_stream_events`
+  now catches `CancelledError`/`GeneratorExit` at its `yield` and tells the
+  finalizer, which logs "cancelled" at **info**; the "abandoned" **warning** is
+  kept for a stream that stopped producing without being torn down. Callers that
+  bound a turn with `asyncio.wait_for` — the usual defence against a local model
+  circling for hours — hit the deliberate case on every capped run, and a warning
+  there is noise that teaches the reader to skim past the one that means
+  something. The run is finalized identically either way; only the log line
+  changes.
+
 ## [0.1.33] — 2026-08-31
 
 ### Removed
@@ -538,7 +568,7 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
-[Unreleased]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.33...HEAD
+[0.1.34]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.33...v0.1.34
 [0.1.33]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.32...v0.1.33
 [0.1.32]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.30...v0.1.31

@@ -479,17 +479,29 @@ class Agent:
             pending.append({"tool_call_id": c.tool_call_id, "tool_name": c.tool_name, "args": args})
         return pending or None
 
-    def _finalize_run(self, session_key: str, result: Any) -> None:
-        """Persist messages + last-system-prompt and record/clear pending approvals."""
+    def _finalize_run(self, session_key: str, result: Any, *, cancelled: bool = False) -> None:
+        """Persist messages + last-system-prompt and record/clear pending approvals.
+
+        ``cancelled`` says the consumer tore the stream down deliberately (a
+        ``asyncio.wait_for`` time cap, a cancelled task). That is a normal way to
+        end a run and is logged at info; the warning is reserved for a stream
+        that simply stopped producing, which is the case worth noticing.
+        """
         if not self._session_store:
             return
         if result is None:
-            # No AgentRunResultEvent reached us: the consumer abandoned the stream
-            # before it ended. Nothing to persist — but the turn *did* run, so say
-            # so rather than dropping it silently.
-            logger.warning(
-                "Run not finalized, stream abandoned before its result | session=%s", session_key
-            )
+            # No AgentRunResultEvent reached us: the run ended before its result.
+            # Nothing to persist — but the turn *did* run, so say so rather than
+            # dropping it silently.
+            if cancelled:
+                logger.info(
+                    "Run cancelled by consumer, not finalized | session=%s", session_key
+                )
+            else:
+                logger.warning(
+                    "Run not finalized, stream abandoned before its result | session=%s",
+                    session_key,
+                )
             return
         messages = result.all_messages()
         self._session_store.save(session_key, messages)
@@ -712,10 +724,17 @@ class Agent:
                         final_result = event.result
                     yield event
 
+        cancelled = False
         try:
             yield False, _event_gen()
+        except (asyncio.CancelledError, GeneratorExit):
+            # A deliberate teardown: a time cap around the turn (`asyncio.wait_for`),
+            # a cancelled task, or the consumer's generator being closed. Still a
+            # run without a result, but not a lost one — see `_finalize_run`.
+            cancelled = True
+            raise
         finally:
             # `finally`, because an exception raised by the consumer mid-stream is
             # thrown in at the `yield` above: without it the turn is lost entirely
             # — history unsaved and a stale `pending_approvals` left behind.
-            self._finalize_run(session_key, final_result)
+            self._finalize_run(session_key, final_result, cancelled=cancelled)

@@ -9,6 +9,7 @@ none of them is visible from the happy path a normal chat exercises.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from pydantic_ai import AgentRunResultEvent
@@ -123,6 +124,33 @@ def test_consumer_raising_mid_run_leaves_no_stale_state(tmp_path, caplog):
 
     assert any("stream abandoned" in r.message for r in caplog.records)
     assert agent.pending_approvals("s") is None
+
+
+def test_deliberate_cancellation_is_not_reported_as_a_loss(tmp_path, caplog):
+    """A time cap around a turn is a normal ending, not a dropped run.
+
+    Callers that bound a turn with `asyncio.wait_for` hit this on every capped
+    probe; a warning there is noise that trains the reader to skim past the one
+    that means something.
+    """
+    agent = _agent(tmp_path)
+
+    async def go():
+        async def turn():
+            async with agent.run_stream_events("hi", session_key="s") as (_, value):
+                async for _event in value:
+                    await asyncio.sleep(10)  # outlives the cap
+
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(turn(), timeout=0.05)
+
+    with caplog.at_level(logging.INFO, logger="selmakit.agent"):
+        asyncio.run(go())
+
+    messages = [r.message for r in caplog.records]
+    assert any("cancelled" in m for m in messages)
+    assert not any("abandoned" in m for m in messages)
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
 
 
 def test_abandoned_stream_is_reported_not_swallowed(tmp_path, caplog):

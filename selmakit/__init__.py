@@ -18,7 +18,13 @@ from selmakit.gateway import (
 from selmakit.memory import SqliteMemory
 from selmakit.message import QueueItem, ReplyHandle
 from selmakit.schedule import ScheduleContext
-from selmakit.session import JsonlStore
+from selmakit.session import (
+    JsonlStore,
+    load_session_messages,
+    load_session_meta,
+    session_file,
+    session_meta_file,
+)
 from selmakit.tools import make_filesystem_tools
 from selmakit.validation import run_messages, tool_returns
 
@@ -45,8 +51,12 @@ __all__ = [
     "WorkspacePromptCapability",
     "build_skills_capability",
     "default_capabilities",
+    "load_session_messages",
+    "load_session_meta",
     "make_commands",
     "make_filesystem_tools",
     "run_messages",
+    "session_file",
+    "session_meta_file",
     "tool_returns",
 ]
