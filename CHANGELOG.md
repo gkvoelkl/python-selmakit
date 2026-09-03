@@ -5,6 +5,94 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.35] — 2026-09-03
+
+### Fixed
+
+- **Every run was capped at 50 model requests, and nobody had chosen that
+  number.** `usage_limits` appeared nowhere in `agent.py`, so pydantic-ai's own
+  default of 50 applied to every turn — invisible in the config, unreachable
+  from outside, and impossible for a downstream project to raise without going
+  around selmakit. It never shows up in a chat; it is tight for an agent with a
+  large tool surface, because the budget is **per run**: a turn spending 18 tool
+  calls has spent 19 requests, and every output-validator `ModelRetry` costs
+  another. Runs died mid-turn with `The next request would exceed the
+  request_limit of 50`.
+
+  The limit is now set at the two places run kwargs are built — `_prepare_run`
+  and `_prepare_approval_resume` — which covers `run_stream`,
+  `run_stream_events` and the unattended path together. It is also listed in
+  `_run_unattended_autodeny`'s `resume_kwargs` whitelist; a key missing from
+  that tuple is dropped silently on every auto-deny resume, so the resumed run
+  would have carried on against pydantic-ai's default instead of the configured
+  budget. `memory_flush` and `compact_session` stay deliberately unlimited: they
+  bypass `_prepare_run` and are single requests with no tool loop to bound.
+
+- **A usage-limit abort no longer costs the turn.** The exception rose through
+  `run_stream_events` before any result existed, so the finalizer had nothing to
+  persist and the session file ended up holding no trace of the turn at all —
+  including the tool calls that had already completed successfully. What the
+  agent did was recoverable only from the browser window, not from the run log,
+  which is the worse half of this defect for anything that reads sessions back:
+  a trace reader, a judge, a dialogue-level benchmark loses precisely the turn it
+  was measuring.
+
+  `run_stream_events` now catches `UsageLimitExceeded`, reads the run's messages
+  off the stream handle (`AgentRunEvents.all_messages()`) and hands them to
+  `_finalize_run`, then **re-raises**. Keeping the exception is deliberate: the
+  gateway worker already turns it into an `error` event, so the user sees the
+  abort either way, and swallowing it would dress a failed turn up as an answer.
+  The recovery is best-effort — the handle raises for a custom `AbstractAgent`
+  whose `iter()` chain does not bind the run, and an unusable handle degrades to
+  "nothing to save" rather than replacing one exception with another.
+
+  Scoped to that path on purpose. A run that ends without a result still
+  persists nothing, because pretending otherwise would invent a turn that never
+  completed; a usage-limit abort is the exception because its tool calls are
+  real, finished work. No `last_validated_output` is written (there is no
+  answer) and `pending_approvals` is cleared.
+
+### Added
+
+- **A `limits` config section.** `LimitsConfig` mirrors the four `UsageLimits`
+  fields worth setting from a file: `request_limit`, `tool_calls_limit`,
+  `total_tokens_limit`, `cost_limit`; `null` disables one. `request_limit`
+  **defaults to 50 because that is pydantic-ai's own default** — the field
+  changes no behaviour on an existing install, it makes an already-active number
+  visible and adjustable. `Agent` takes a matching `limits=` parameter, passed
+  by `Gateway.from_config` and `Agent.from_file`; `Agent(limits=None)`, the
+  hand-built default, passes nothing through and keeps pydantic-ai's behaviour
+  exactly.
+
+- **Sidebar panels in the dashboard.** `DashboardConfig.sidebar_panels` takes a
+  sequence of `(SidebarContext) -> None` render functions, drawn below the
+  built-in sidebar. The verbose log is chronological, which is the wrong shape
+  for a tool call that carries a **state** rather than an event: a model calling
+  `write_plan` five times with its full payload produces five near-identical
+  checklists, current one last, at the bottom where nobody is scrolling. A panel
+  draws into its own `st.sidebar.empty()`, so a refresh replaces it.
+
+  **SelmaKit renders no checklist and knows no capability by name.** The panel is
+  a pure view over data the SSE stream already carries — no `/plan` endpoint, no
+  second source of truth, no way for display and reality to drift apart. Turning
+  events into state happens in the panel.
+
+  `SidebarContext` (frozen) carries `tool_activity` (this turn's verbose entries),
+  `messages` (the history, for the idle fallback) and `streaming`. Both sequences
+  are tuples so a panel cannot append to the dashboard's lists; the dicts inside
+  are live objects, so read-only there is convention rather than enforcement.
+  Panels refresh **only on state-bearing events** (`tool`, `tool_result`,
+  `approval`, `metrics`) — the repaint that redraws the verbose log also fires
+  per `thinking` delta, i.e. potentially per token, and third-party code does not
+  belong in that path. Each call is wrapped so an exception is reported inside
+  that panel's own box instead of ending the turn; `except Exception` is the
+  right width because Streamlit's `RerunException`/`StopException` derive from
+  `BaseException`. Panels must not own `st.session_state` keys.
+
+- **`DashboardConfig.sidebar_width`** (default `200`). The sidebar was pinned at
+  200px by hard-coded CSS — enough for branding and buttons, not for a panel, so
+  the hook above would otherwise have had nowhere readable to render.
+
 ## [0.1.34] — 2026-08-31
 
 ### Added
@@ -568,6 +656,7 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
+[0.1.35]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.34...v0.1.35
 [0.1.34]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.33...v0.1.34
 [0.1.33]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.32...v0.1.33
 [0.1.32]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.31...v0.1.32

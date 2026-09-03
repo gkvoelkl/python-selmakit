@@ -15,6 +15,7 @@ from pydantic_ai import (
     ToolApproved,
     ToolDenied,
 )
+from pydantic_ai.exceptions import UsageLimitExceeded
 
 from selmakit.commands import CommandContext, RunPrompt, SessionProxy
 from selmakit.schedule import ScheduleConfig, ScheduleContext, ScheduleRunner
@@ -38,6 +39,24 @@ class _CommandResult:
 
     def all_messages(self) -> list:
         return []
+
+
+def _handle_messages(handle: Any) -> list | None:
+    """The messages a run produced, read off a live stream handle.
+
+    ``AgentRunEvents.all_messages()`` only works for a run bound through
+    pydantic-ai's ``Agent.iter()`` path — the built-in agents do this, a custom
+    ``AbstractAgent`` need not, and then it raises ``UserError``. This is a
+    best-effort rescue on a path that is already failing, so an unusable handle
+    degrades to "nothing to save" rather than replacing one exception with
+    another.
+    """
+    try:
+        messages = handle.all_messages()
+    except Exception as exc:  # pragma: no cover - depends on the agent implementation
+        logger.debug("Could not read messages off the run handle: %s", exc)
+        return None
+    return list(messages) or None
 
 
 def _format_history_for_compaction(messages: list) -> str:
@@ -77,8 +96,13 @@ class Agent:
         memory: Any = None,
         heartbeat: ScheduleConfig | None = None,
         model_config: Any = None,
+        limits: Any = None,
     ):
         self._state_dir = Path(state_dir)
+        # Per-run usage limits (a LimitsConfig). None → nothing is passed to
+        # pydantic-ai and *its* defaults apply, which is what a hand-built Agent
+        # got before this parameter existed. Gateway/from_file always pass one.
+        self._usage_limits = limits.to_usage_limits() if limits is not None else None
         # Base model config, used to build per-run override models (live /model
         # switching). None → no override support; runs always use `model`.
         self._model_config = model_config
@@ -165,6 +189,7 @@ class Agent:
             session_store=session_store,
             memory=memory,
             model_config=cfg,
+            limits=config.limits,
             **kwargs,
         )
 
@@ -371,6 +396,9 @@ class Agent:
         )
         try:
             history = self._session_store.load(session_key)
+            # Deliberately no `usage_limits`: this goes past `_prepare_run`, and
+            # a one-tool silent turn has no loop to bound. Adding a budget here
+            # would only give it a new way to fail.
             await self._agent.run(prompt, message_history=history, deps=session_key)
         except Exception as e:
             logger.warning("memory_flush failed | session=%s error=%s", session_key, e)
@@ -398,6 +426,8 @@ class Agent:
             f"{history_text}"
         )
         try:
+            # No `usage_limits`, same reason as `memory_flush`: a single
+            # summarisation request, no tool loop to bound.
             result = await self._agent.run(compaction_prompt, message_history=[], deps=session_key)
             self._session_store.save(session_key, result.all_messages())
             after = len(result.all_messages())
@@ -479,15 +509,44 @@ class Agent:
             pending.append({"tool_call_id": c.tool_call_id, "tool_name": c.tool_name, "args": args})
         return pending or None
 
-    def _finalize_run(self, session_key: str, result: Any, *, cancelled: bool = False) -> None:
+    def _finalize_run(
+        self,
+        session_key: str,
+        result: Any,
+        *,
+        cancelled: bool = False,
+        partial_messages: list | None = None,
+    ) -> None:
         """Persist messages + last-system-prompt and record/clear pending approvals.
 
         ``cancelled`` says the consumer tore the stream down deliberately (a
         ``asyncio.wait_for`` time cap, a cancelled task). That is a normal way to
         end a run and is logged at info; the warning is reserved for a stream
         that simply stopped producing, which is the case worth noticing.
+
+        ``partial_messages`` is the history of a run pydantic-ai aborted on a
+        usage limit. It is passed *only* from that path, deliberately: a run
+        without a result generally has nothing worth persisting (see below), but
+        a usage-limit abort is different — the tool calls it already made are
+        real, completed work, and dropping them means the turn never happened as
+        far as the session file is concerned. That is the case where a run log
+        or a dialogue-level benchmark loses exactly the turn it was measuring.
         """
         if not self._session_store:
+            return
+        if result is None and partial_messages:
+            self._session_store.save(session_key, partial_messages)
+            self._session_store.touch(session_key)
+            instr = self._extract_instructions(partial_messages)
+            if instr:
+                self._session_store.set_meta(session_key, "last_system_prompt", instr)
+            # No output, so no `last_validated_output`; and the run ended for a
+            # reason other than deferral, so nothing is awaiting approval.
+            self._session_store.set_meta(session_key, "pending_approvals", None)
+            logger.warning(
+                "Run hit a usage limit, saved %d partial message(s) | session=%s",
+                len(partial_messages), session_key,
+            )
             return
         if result is None:
             # No AgentRunResultEvent reached us: the run ended before its result.
@@ -545,6 +604,8 @@ class Agent:
             "deps": session_key,
             "deferred_tool_results": DeferredToolResults(approvals=approvals),
         }
+        if self._usage_limits is not None:
+            kwargs["usage_limits"] = self._usage_limits
         override_model = self._resolve_run_model(session_key)
         if override_model is not None:
             kwargs["model"] = override_model
@@ -558,7 +619,14 @@ class Agent:
         result = await (self._agent.run(**run_kwargs) if prompt is None
                         else self._agent.run(prompt, **run_kwargs))
 
-        resume_kwargs = {k: v for k, v in run_kwargs.items() if k in ("deps", "model", "capabilities")}
+        # `usage_limits` belongs in this filter: dropping it would let each
+        # auto-deny resume start over against pydantic-ai's own default instead
+        # of the configured budget — the failure mode is a run that quietly
+        # keeps going, which is exactly the one nobody notices.
+        resume_kwargs = {
+            k: v for k, v in run_kwargs.items()
+            if k in ("deps", "model", "capabilities", "usage_limits")
+        }
         guard = 0
         while isinstance(result.output, DeferredToolRequests) and guard < _MAX_APPROVAL_ITERATIONS:
             guard += 1
@@ -641,6 +709,8 @@ class Agent:
             history = self._session_store.load(session_key)
 
         kwargs: dict[str, Any] = {"message_history": history, "deps": session_key}
+        if self._usage_limits is not None:
+            kwargs["usage_limits"] = self._usage_limits
 
         override_model = self._resolve_run_model(session_key)
         if override_model is not None:
@@ -713,16 +783,26 @@ class Agent:
             return
 
         final_result = None
+        partial_messages: list | None = None
 
         async def _event_gen():
-            nonlocal final_result
+            nonlocal final_result, partial_messages
             stream_cm = (self._agent.run_stream_events(**kwargs) if effective_prompt is None
                          else self._agent.run_stream_events(effective_prompt, **kwargs))
             async with stream_cm as stream:
-                async for event in stream:
-                    if isinstance(event, AgentRunResultEvent):
-                        final_result = event.result
-                    yield event
+                try:
+                    async for event in stream:
+                        if isinstance(event, AgentRunResultEvent):
+                            final_result = event.result
+                        yield event
+                except UsageLimitExceeded:
+                    # The budget ran out mid-loop, so there is no result — but
+                    # the handle still holds every message the run produced. Keep
+                    # them for `_finalize_run` and let the exception through: the
+                    # caller must still see the turn as failed (the gateway turns
+                    # it into an `error` event), it just no longer loses the work.
+                    partial_messages = _handle_messages(stream)
+                    raise
 
         cancelled = False
         try:
@@ -737,4 +817,6 @@ class Agent:
             # `finally`, because an exception raised by the consumer mid-stream is
             # thrown in at the `yield` above: without it the turn is lost entirely
             # — history unsaved and a stale `pending_approvals` left behind.
-            self._finalize_run(session_key, final_result, cancelled=cancelled)
+            self._finalize_run(
+                session_key, final_result, cancelled=cancelled, partial_messages=partial_messages
+            )

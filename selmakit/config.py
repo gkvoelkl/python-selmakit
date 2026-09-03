@@ -1,9 +1,13 @@
 import json
 import time
+from decimal import Decimal
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import TYPE_CHECKING, Dict, Tuple
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from pydantic_ai.usage import UsageLimits
 
 CACHE_VALIDITY_SECONDS = 120
 _config_cache: Dict[str, Tuple["SelmaKitConfig", float]] = {}
@@ -151,6 +155,37 @@ class SubAgentsConfig(BaseModel):
     models: dict[str, SubAgentModelConfig] = {}  # routing menu; empty = no per-delegation choice
 
 
+class LimitsConfig(BaseModel):
+    """Usage limits for a single agent run — mirrors pydantic-ai's ``UsageLimits``.
+
+    ``request_limit`` is spelled out rather than left implicit: 50 is what
+    pydantic-ai applies by default, so writing it here changes nothing except
+    that the number becomes visible and adjustable. It is a *per-run* budget, so
+    an agent with a large tool surface can spend it on one turn — 18 tool calls
+    is 19 requests, and every output-validator ``ModelRetry`` costs another.
+    ``None`` disables a limit.
+
+    Only the four limits worth tuning from a config file are exposed;
+    ``UsageLimits`` has more (per-request token caps, pre-request counting) and
+    a caller needing those builds its own.
+    """
+
+    request_limit: int | None = 50
+    tool_calls_limit: int | None = None
+    total_tokens_limit: int | None = None
+    cost_limit: Decimal | None = None
+
+    def to_usage_limits(self) -> "UsageLimits":
+        from pydantic_ai.usage import UsageLimits
+
+        return UsageLimits(
+            request_limit=self.request_limit,
+            tool_calls_limit=self.tool_calls_limit,
+            total_tokens_limit=self.total_tokens_limit,
+            cost_limit=self.cost_limit,
+        )
+
+
 class SelmaKitConfig(BaseModel):
     model: ModelConfig = ModelConfig()
     memory: MemoryConfig = MemoryConfig()
@@ -160,6 +195,7 @@ class SelmaKitConfig(BaseModel):
     mcp: McpConfig = McpConfig()
     subagents: SubAgentsConfig = SubAgentsConfig()
     tracing: TracingConfig = TracingConfig()
+    limits: LimitsConfig = LimitsConfig()
 
 
 def build_model(cfg: ModelConfig):

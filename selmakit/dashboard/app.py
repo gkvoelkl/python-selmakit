@@ -17,13 +17,13 @@ import json
 import os
 import re
 import uuid
-from typing import Any, Dict, Generator, List
+from typing import Any, Dict, Generator, List, Sequence
 
 import httpx
 import streamlit as st
 import streamlit.components.v1 as components
 
-from selmakit.dashboard.config import DashboardConfig
+from selmakit.dashboard.config import DashboardConfig, SidebarContext, SidebarPanel
 
 # Matches local .html references in a reply: bare paths, file:// URLs or
 # markdown links. Captures the path part so it can be read from disk.
@@ -284,6 +284,32 @@ def render_tool_activity(
             st.html(_ACTIVITY_CSS + f'<div class="sk-log">{body}</div>')
 
 
+def render_sidebar_panels(
+    boxes: List[Any],
+    panels: Sequence[SidebarPanel],
+    ctx: SidebarContext,
+) -> None:
+    """Draw each configured sidebar panel into its own placeholder.
+
+    One ``st.sidebar.empty()`` per panel, created once per script run, so a
+    refresh *replaces* the panel instead of appending a second copy — that is
+    the whole point of a panel over the chronological tool log.
+
+    A panel is third-party code from the dashboard's point of view: an exception
+    is reported inside that panel's own box and the turn carries on. ``except
+    Exception`` is the right width here — Streamlit's ``RerunException`` and
+    ``StopException`` derive from ``BaseException``, so a panel calling
+    ``st.rerun()`` is not swallowed.
+    """
+    for box, panel in zip(boxes, panels):
+        with box.container():
+            try:
+                panel(ctx)
+            except Exception as exc:
+                name = getattr(panel, "__name__", repr(panel))
+                st.error(f"Sidebar-Panel `{name}`: {exc}")
+
+
 def render_approval(pending: List[dict]) -> None:
     """Render the approval prompt + Freigeben/Ablehnen buttons for gated tool
     calls awaiting a decision. Clicking queues /approve or /deny as the next turn."""
@@ -314,14 +340,16 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
     if "config_editing" not in st.session_state:
         st.session_state.config_editing = False
 
-    # -- Custom CSS for fixed sidebar width
+    # -- Custom CSS for fixed sidebar width. The default 200px fits branding and
+    #    buttons; a sidebar panel (a plan, a cost readout) usually needs more, so
+    #    widen it via cfg.sidebar_width rather than shipping unreadable panels.
     st.markdown(
-        """
+        f"""
         <style>
-        [data-testid="stSidebar"] {
-            min-width: 200px;
-            max-width: 200px;
-        }
+        [data-testid="stSidebar"] {{
+            min-width: {cfg.sidebar_width}px;
+            max-width: {cfg.sidebar_width}px;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -430,6 +458,27 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                 except Exception as e:
                     st.error(f"Could not save: {e}")
 
+    # -- Sidebar panels: one placeholder per panel, created once per script run.
+    #    Panels are a *view onto data the stream already carries* — no second
+    #    source of truth, no extra gateway endpoint.
+    panel_boxes = [st.sidebar.empty() for _ in cfg.sidebar_panels]
+
+    def repaint_panels(activity: Sequence[Dict[str, Any]] = (), *, streaming: bool) -> None:
+        if not cfg.sidebar_panels:
+            return
+        render_sidebar_panels(
+            panel_boxes,
+            cfg.sidebar_panels,
+            SidebarContext(
+                tool_activity=tuple(activity),
+                messages=tuple(st.session_state.messages),
+                streaming=streaming,
+            ),
+        )
+
+    # Idle draw, so the last completed turn's state stays up between turns.
+    repaint_panels(streaming=False)
+
     # -- Alert polling (runs every 5 s independently of user input)
     @st.fragment(run_every="5s")
     def poll_alerts():
@@ -499,8 +548,17 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                 pending_approval: List[dict] = []    # gated tool calls awaiting a decision
                 attachments: List[dict] = []         # files delivered via send_file
 
-                def repaint() -> None:
+                def repaint(*, panels: bool = False) -> None:
+                    """Redraw the verbose log; with ``panels=True`` the sidebar too.
+
+                    Panels refresh only on state-bearing events (tool call,
+                    result, approval, metrics). ``repaint()`` also runs per
+                    ``thinking`` delta — i.e. potentially per token — and
+                    third-party panel code has no business in that path.
+                    """
                     render_tool_activity(activity_box, activity, turn_metrics or None)
+                    if panels:
+                        repaint_panels(activity, streaming=True)
 
                 with httpx.Client() as client:
                     with client.stream("POST", cfg.stream_url, json=payload, timeout=cfg.stream_timeout) as response:
@@ -511,7 +569,7 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                                     args = event.get("args")
                                     if args is not None:   # verbose: log it
                                         activity.append({"kind": "call", "name": name, "args": args})
-                                        repaint()
+                                        repaint(panels=True)
                                     else:                  # quiet mode: a passing caption
                                         tool_status.caption(f"🔧 {name}…")
                                 case "tool_result":
@@ -522,7 +580,7 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                                         "duration": event.get("duration"),
                                         "error": bool(event.get("error")),
                                     })
-                                    repaint()
+                                    repaint(panels=True)
                                 case "thinking":
                                     # Deltas accumulate into one entry so reasoning
                                     # stays a single collapsible, not one per token.
@@ -533,11 +591,11 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                                     repaint()
                                 case "metrics":
                                     turn_metrics = {k: v for k, v in event.items() if k != "type"}
-                                    repaint()
+                                    repaint(panels=True)
                                 case "approval":
                                     pending_approval = event.get("pending", []) or []
                                     activity.append({"kind": "approval", "pending": pending_approval})
-                                    repaint()
+                                    repaint(panels=True)
                                 case "file":
                                     attachments.append(event)
                                 case "chunk":
@@ -552,6 +610,9 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
                                     tool_status.empty()
                                     reply_box.markdown(full_reply)
 
+                # Final draw with streaming=False: the script ends here, so this
+                # is the state the panel shows until the next rerun.
+                repaint_panels(activity, streaming=False)
                 render_html_files(full_reply)
                 render_attachments(attachments)
                 st.session_state.messages.append({
