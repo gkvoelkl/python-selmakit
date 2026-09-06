@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.34+](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.40+](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -470,6 +470,10 @@ async def gate(ctx, output: str) -> str:
 
 `run_messages(ctx)` returns the current run's `ModelMessage`s if you need the full parts. Extracting concrete values (file paths, etc.) from a tool result's `content` stays your job — tool results are application-specific, and selmakit imposes no `output_path` convention.
 
+**Calls made inside a `run_code` sandbox are included.** The harness `CodeMode` capability turns selected tools into Python functions the model calls from code, and reports those calls as metadata on the *single* `run_code` return rather than as tool calls of their own. `tool_returns` unpacks them (listed before the `run_code` entry, which is when they ran), so switching CodeMode on does not quietly leave your gate with nothing to check — the failure mode being avoided is a validator that stops finding anything and therefore passes everything. `run_messages(ctx)` cannot do this: the nested calls are parts of one message, not messages of their own.
+
+**Retry budgets.** A validator's `ModelRetry` is charged to the run's *output* budget, which is shared by all validators — pydantic-ai defaults it to 1, selmakit to 2, so a graded validator can force a second correction after the heavy one. Change it per agent with `Agent(..., retries={"output": 3})`; the value is merged over the defaults, so the tool budget stays where it is.
+
 ---
 
 ### Scheduled Turns
@@ -788,8 +792,8 @@ and cron — everything only some deployments need is an extra.
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.33.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
-| `pydantic-ai-harness>=0.24.0` | The official capability library — supplies the default `FileSystem` (sandboxed file tools) and `Skills` (deferred skill loading), plus `SubAgents` when enabled |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.40.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai-harness>=0.29.0` | The official capability library — supplies the default `FileSystem` (sandboxed file tools) and `Skills` (deferred skill loading), plus `SubAgents` when enabled |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `httpx` | Async HTTP client |
 | `python-dotenv` | `.env` loading |

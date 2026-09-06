@@ -5,6 +5,54 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.36] — 2026-09-06
+
+### Fixed
+
+- **Output validation had exactly one retry per run, and nobody had chosen that
+  number** ([#1](https://github.com/gkvoelkl/python-selmakit/issues/1)).
+  `agent.py` passed `retries={"tools": 4}`, and pydantic-ai resolves the two
+  budgets *separately*, defaulting each to 1 — so raising the tool side left
+  output validation at the default, invisibly. That budget is shared by **all**
+  output validators of a run, which makes the graded validator the losing case:
+  it fixes the heaviest flaw first, and the second flaw's `ModelRetry` arrives
+  with the budget gone and degrades into a note the model never acts on. A run
+  with two flaws is precisely the run where the milder one starves.
+
+  Both budgets are now spelled out (`{"tools": 4, "output": 2}`) and exposed as
+  `Agent(..., retries=…)`. 2 rather than more is deliberate: a *computing*
+  correction that failed once tends to fail again and the clock keeps running,
+  but the flaw that typically comes second — a dead link, a mangled path in the
+  answer text — costs no tool call to fix, just the same answer with the value
+  filled in. The argument is **merged over** the defaults, so raising one budget
+  cannot silently reset the other: the same trap, one level up.
+
+- **`tool_returns()` lost every call made inside a `run_code` sandbox**
+  ([#1](https://github.com/gkvoelkl/python-selmakit/issues/1)). The harness
+  `CodeMode` capability turns selected tools into Python functions and reports
+  the nested calls as `metadata['tool_returns']` on the single `run_code`
+  return; the helper dropped `metadata`, leaving a result-gate with one
+  `("run_code", …)` entry and nothing of what produced the answer.
+
+  This is worse than a missing convenience, because it is a validator losing its
+  basis: no exception, no red check, just runs that suddenly pass — the failure
+  mode a validator exists to prevent. Nested results are now unpacked by
+  default, listed before the `run_code` entry that carried them, guarded by
+  `isinstance` on both the metadata and its values since the shape crosses a
+  version boundary into the harness. Not an opt-in flag: opting in would leave
+  the trap armed for whoever does not know to look. `run_messages()` cannot make
+  the same promise — the nested calls are parts of one message, not messages.
+
+  Fixed before anything here switches `CodeMode` on, which is the only order
+  that helps: a validator that stops checking does not report it.
+
+### Changed
+
+- Dependency floors now track the tested versions: `pydantic-ai>=2.40.0`,
+  `pydantic-ai-harness>=0.29.0` (the known-good minimums, 2.34.0 and 0.24.0,
+  are kept in the comments next to them). The README's dependency table had
+  drifted to a lower floor than `pyproject.toml` and is corrected.
+
 ## [0.1.35] — 2026-09-03
 
 ### Fixed

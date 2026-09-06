@@ -10,6 +10,7 @@ from typing import Any, Callable, Sequence
 
 from pydantic_ai import (
     Agent as _PydanticAgent,
+    AgentRetries,
     DeferredToolRequests,
     DeferredToolResults,
     ToolApproved,
@@ -25,6 +26,27 @@ logger = logging.getLogger(__name__)
 
 _MAX_MESSAGES_BEFORE_COMPACT = 50
 _MAX_APPROVAL_ITERATIONS = 5  # safety cap on chained approval/deny resume loops
+
+# Per-run retry budgets for the inner pydantic-ai agent. Both keys are spelled
+# out because pydantic-ai resolves them *separately* and defaults each to 1, so
+# a partial `{"tools": 4}` silently leaves `output` at 1 — which is how the
+# output budget sat at the default here unnoticed while only tools was raised.
+#
+# tools=4: pydantic-ai's 1 is too tight because skills are deferred capabilities,
+#   so their names sit in the prompt catalog next to the real tools and smaller
+#   local models call e.g. `web-research` directly instead of
+#   `load_capability(id="web-research")`. Each unknown name is a ModelRetry
+#   charged to that name, so a budget of 1 kills the turn on the second fumble;
+#   with room to retry the model falls back to the real tools.
+# output=2: one budget shared by *all* output validators of a run. A validator
+#   with graded checks fixes the heaviest flaw first, so a run with two flaws
+#   spends the budget there and the second ModelRetry degrades into a note the
+#   model never acts on — the normal case for such a validator, not an edge one.
+#   2 rather than more is the point: a *computing* correction that failed once
+#   tends to fail again (and the clock keeps running), but the flaw that
+#   typically comes second — a dead link, a mangled path in the answer text —
+#   costs no tool call to fix, just the same answer with the value filled in.
+_DEFAULT_RETRIES: AgentRetries = {"tools": 4, "output": 2}
 
 
 class _CommandResult:
@@ -97,8 +119,17 @@ class Agent:
         heartbeat: ScheduleConfig | None = None,
         model_config: Any = None,
         limits: Any = None,
+        retries: dict[str, int] | None = None,
     ):
         self._state_dir = Path(state_dir)
+        # Merged over the defaults rather than replacing them, so raising one
+        # budget cannot silently reset the other — the trap in pydantic-ai's own
+        # partial-dict handling that `_DEFAULT_RETRIES` exists to avoid.
+        overrides = retries or {}
+        self._retries: AgentRetries = {
+            "tools": overrides.get("tools", _DEFAULT_RETRIES["tools"]),
+            "output": overrides.get("output", _DEFAULT_RETRIES["output"]),
+        }
         # Per-run usage limits (a LimitsConfig). None → nothing is passed to
         # pydantic-ai and *its* defaults apply, which is what a hand-built Agent
         # got before this parameter existed. Gateway/from_file always pass one.
@@ -139,13 +170,8 @@ class Agent:
             # surface as a run output instead of executing; harmless for normal
             # turns, whose output stays a plain str.
             output_type=[str, DeferredToolRequests],
-            # pydantic-ai's default of 1 is too tight here: skills are deferred
-            # capabilities, so their names sit in the prompt catalog next to the real
-            # tools and smaller local models call e.g. `web-research` directly instead
-            # of `load_capability(id="web-research")`. Each unknown name is a ModelRetry
-            # charged to that name, so a budget of 1 kills the turn on the second
-            # fumble — with room to retry the model falls back to the real tools.
-            retries={"tools": 4},
+            # See `_DEFAULT_RETRIES` for why neither budget is left at pydantic-ai's 1.
+            retries=self._retries,
         )
         self._session_store = session_store or JsonlStore(
             path=str(self._state_dir / "sessions"),
