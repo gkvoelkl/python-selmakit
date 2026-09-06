@@ -216,6 +216,41 @@ Runs entirely outside the LLM loop. `ScheduleRunner` is an `asyncio` task that t
 
 ---
 
+## Run Budgets & Result Gates
+
+Three numbers bound a turn, and none of them belongs to a capability: they are properties of the run as a whole. Two are budgets the wrapper sets on the inner agent; the third is the verification a caller bolts on. They share a failure mode worth stating once — **a budget nobody chose is still a budget**, and it is enforced whether or not anyone knows the number.
+
+### Retry budgets (`retries`)
+
+pydantic-ai keeps **two** retry budgets per run and resolves them *separately*, defaulting each to 1: `tools` for a `ModelRetry` charged to a tool call, `output` for one raised by output validation. A partial `retries={"tools": 4}` therefore raises one and silently leaves the other at the default — which is exactly what happened here until 0.1.36, and it is invisible from the outside because nothing reports a budget that was never set.
+
+`Agent` spells out both (`_DEFAULT_RETRIES = {"tools": 4, "output": 2}`) and takes a `retries=` override:
+
+- **`tools=4`** — skills are deferred capabilities, so their names sit in the prompt catalog next to the real tools. Smaller local models call the skill name directly instead of `load_capability(id=…)`; each unknown name is a `ModelRetry` charged to that name, so a budget of 1 ends the run on the second fumble. With room to retry, the model falls back to the real tools.
+- **`output=2`** — one budget shared by *all* output validators of a run. A validator with graded checks forces the heaviest flaw to be corrected first, so a run with two flaws spends the budget there and the second `ModelRetry` degrades into a note the model never acts on. That is the normal shape of a graded validator, not an edge case. Two rather than more is the actual design decision: a *computing* correction that failed once tends to fail again while the clock keeps running, but the flaw that typically arrives second — a dead link, a mangled path in the answer text — costs no tool call to fix, only the same answer with the value filled in. The useful distinction is not "one retry or two" but "recomputing versus rewriting".
+
+The override is **merged over** the defaults, so raising one budget cannot reset the other — the same trap, one level up. `Gateway.from_config` does not forward it: a deployment needing other budgets constructs the `Agent` itself. It is deliberately *not* in `LimitsConfig`, which mirrors pydantic-ai's `UsageLimits` and would lose that meaning if retries moved in.
+
+### Usage limits (`limits`)
+
+`LimitsConfig` (the `limits` config section) becomes a `UsageLimits` on every interactive run. `request_limit` defaults to **50 because that is pydantic-ai's own default** — the field changes no behaviour, it makes an already-active number visible and adjustable. It is a *per-run* budget: a turn spending 18 tool calls has spent 19 requests, and every output-validator retry costs another, so an agent with a large tool surface can hit 50 on a single successful turn.
+
+It is set at the two places run kwargs are built (`_prepare_run` and `_prepare_approval_resume`) and listed in `_run_unattended_autodeny`'s whitelist — a key missing from that tuple is dropped silently on every auto-deny resume. `memory_flush` and `compact_session` stay unlimited: they bypass `_prepare_run` and are single requests with no tool loop.
+
+### Result gates (`@agent.output_validator`)
+
+A thin passthrough to pydantic-ai's `Agent.output_validator`, so deterministic result-verification can be a phase of the loop without reaching into `agent._agent`. Two things about it are selmakit's own, and both exist because the obvious reading of the data is wrong:
+
+**The history is not what the user saw.** pydantic-ai validators transform the run's *output value*; the `ModelResponse` keeps what the model said. A validator that rewrites or annotates the answer therefore leaves `sessions/*.json` holding the unvalidated text while the user was shown the validated one. No reordering of the save reconciles them — they are different values. `_finalize_run` caches the validated one in the `last_validated_output` meta key. Use the history to debug the model, that key for anything grading or replaying what the user was *given*.
+
+**`ctx.messages` is not the run.** It is the whole conversation, earlier runs and compaction-summarised history included. `run_messages(ctx)` / `tool_returns(ctx)` (`validation.py`, re-exported at the package root) cut it to the current run by the public `run_id` field — the same basis pydantic-ai uses for `AgentRunResult.new_messages()`, so no message-layout reconstruction is involved.
+
+`tool_returns` additionally unpacks calls made **inside a `run_code` sandbox**. The harness `CodeMode` capability turns selected tools into Python functions and reports the nested calls as `metadata['tool_returns']` on the *single* `run_code` return, not as tool calls of their own. A gate reading only the top-level parts would be left with one `("run_code", …)` entry and nothing of what produced the answer — and since that is a validator losing its basis, it fails **silently**: no exception, no red check, just runs that suddenly pass. That is the argument for unpacking by default rather than behind a flag; an opt-in leaves the trap armed for whoever does not know to look. Nested results are listed before the `run_code` entry that carried them, and both the metadata and its values are `isinstance`-guarded, since the shape crosses a version boundary into the harness.
+
+The limit of that promise: `run_messages` cannot make it. The nested calls are parts of one message, not messages, so code walking the messages itself still sees only `run_code`.
+
+---
+
 ## MCP Servers & Tool Approval
 
 ### The MCP client
@@ -357,6 +392,7 @@ The dashboard polls this endpoint to surface proactive turns from the heartbeat 
 selmakit/
   __init__.py           — public exports
   agent.py              — selmakit.Agent (thin wrapper around pydantic_ai.Agent)
+  attachments.py        — find_attachments(): the file paths an answer names, confined to a root
   cli.py                — `selmakit` console command: init / gateway / dashboard
   gateway.py            — Gateway composition root + GatewayContext + default_capabilities()
   init.py               — initializes .selmakit/ structure, config, and workspace files
@@ -371,6 +407,7 @@ selmakit/
   skills.py             — skill discovery + XML builder
   tools.py              — make_filesystem_tools() — standalone; defaults use harness FileSystem
   tracing.py            — optional OTLP/HTTP tracing (off unless configured)
+  validation.py         — run_messages() / tool_returns(): run-scoped views for output validators
   workspace.py          — load_workspace_files() + detect_bootstrap()
   channels/
     __init__.py
