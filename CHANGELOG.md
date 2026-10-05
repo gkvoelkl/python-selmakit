@@ -5,6 +5,59 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.37] — 2026-10-05
+
+### Changed
+
+- **Migrated to pydantic-ai 2.54 / pydantic-ai-harness 0.54 and the run
+  workspace.** Since harness 0.52, `FileSystem`, `Skills` and `SubAgents` reach
+  files only through the run's workspace (`ctx.workspace`) and fail every run
+  that has none attached — mypy, ruff and the whole test suite stay green on
+  the new versions, the first real turn does not. `default_capabilities` now
+  starts with `LocalWorkspace(state_dir)`, and `FileSystem()` takes its bound
+  from the workspace's working directory (`root_dir=None`) instead of
+  `root_dir=state_dir`: the same `.selmakit/` sandbox as before. Sub-agents
+  inherit the parent run's workspace and need none of their own.
+  `LocalWorkspace` isolates nothing by itself; the bound is still `FileSystem`'s
+  root check. A custom capability list that keeps any of the three harness
+  capabilities has to add a workspace too (README example updated).
+- **Skills are re-read at the start of every run**, so a new or edited
+  `SKILL.md` is live on the next turn without a gateway restart. A missing
+  `skills/` directory would now fail every run instead of only construction,
+  so `build_skills_capability` still returns `None` when the folder is absent
+  at startup; an existing but empty folder now gets the capability, so the
+  first skill added to it needs no restart either.
+- Dependency floors: `pydantic-ai>=2.54.0`, `pydantic-ai-harness>=0.54.0`.
+  Since 0.52 the harness pins `pydantic-ai-slim` to its exact version, so the
+  two must be raised together.
+
+### Added
+
+- **`tests/test_default_capabilities.py`: real turns through the default
+  capability set.** Every other test hand-picks its capabilities, which is why
+  the workspace break above slipped past all of them. These build the gateway
+  with `Gateway.from_config` on a `selmakit init` state dir — only the model is
+  scripted — and check, from the persisted session, that the file tools work
+  and stay inside `.selmakit/`, that a skill loads and a newly added one is live
+  without a restart, that a delegated sub-agent's own tool reaches the parent's
+  workspace, and that a missing `skills/` directory does not fail turns.
+  Checked against the defects they are meant to catch: dropping
+  `LocalWorkspace` fails all five with the original `UserError`, lifting the
+  file sandbox (`root_dir="/"`) fails the containment test.
+
+### Fixed
+
+- **README brought back in line with the code.** The "Construction" example
+  was missing the workspace (it fails every run on the new harness) and used
+  `make_commands`, `ScheduleConfig`, `config` and `model` without defining
+  them; it now runs as written. Also corrected: the architecture tree (adds
+  `LocalWorkspace`, `CronCapability`, `McpCapability`, `SubAgents`), the claim
+  that sub-agents need the `subagents` extra (the harness is core), the SSE
+  event list (adds `approval`, and the `/verbose`-only `tool_result`,
+  `thinking`, `metrics`), a pointer to the removed Transcript view (now
+  `/verbose` and `/systemprompt`), and the `capabilities.py` / `skills.py`
+  descriptions in the project structure.
+
 ## [0.1.36] — 2026-09-06
 
 ### Fixed
@@ -704,6 +757,8 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
+[0.1.37]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.36...v0.1.37
+[0.1.36]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.35...v0.1.36
 [0.1.35]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.34...v0.1.35
 [0.1.34]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.33...v0.1.34
 [0.1.33]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.32...v0.1.33

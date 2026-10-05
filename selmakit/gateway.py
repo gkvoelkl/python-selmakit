@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence, cast
 
-from pydantic_ai.capabilities import WebFetch, WebSearch
+from pydantic_ai.capabilities import LocalWorkspace, WebFetch, WebSearch
 from pydantic_ai.common_tools.web_fetch import web_fetch_tool
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import Tool
@@ -116,12 +116,15 @@ def build_skills_capability(workspace_dir: str) -> Any | None:
 
     Each ``<skill>/SKILL.md`` becomes a *deferred* capability: only its name and
     description sit in the prompt, and the model pulls the body in on demand via
-    the ``load_capability`` tool. ``Skills`` scans at construction and raises on
-    a missing directory, so an agent whose workspace has no skills folder gets
-    no capability at all rather than a crash.
+    the ``load_capability`` tool. ``Skills`` reads the directory through the
+    run's workspace at the start of *every* run — so a new or edited skill is
+    picked up without a restart — but a missing directory fails each of those
+    runs, not just construction. An agent whose workspace has no skills folder
+    therefore gets no capability at all rather than a crash per turn; creating
+    the folder later needs one restart, adding skills to it does not.
     """
     skills_dir = Path(workspace_dir) / "skills"
-    if not skills_dir.is_dir() or not any(skills_dir.glob("*/SKILL.md")):
+    if not skills_dir.is_dir():
         return None
     return Skills(skills_dir)
 
@@ -130,15 +133,25 @@ def default_capabilities(ctx: GatewayContext) -> list[Any]:
     """The standard selmakit capability set, wired from ``ctx``.
 
     Mirror of the list the old top-level ``gateway.py`` constructed inline.
+
+    The first entry is the run's workspace, which the harness ``FileSystem``,
+    ``Skills`` and ``SubAgents`` all go through (none touches the disk
+    itself). A caller passing its own capability list that keeps any of those
+    must keep a workspace too — without one every run fails at its start.
     """
     caps = [
-        # Sandboxed to the state directory: absolute paths, `~` and `../`
-        # escapes are rejected, symlinks resolved before authorization.
-        # Rooted at `.selmakit` rather than the project because the harness
-        # walkers (list_directory/search_files/find_files) skip every path with
-        # a dot-prefixed component — from the project root the whole state
-        # directory would silently list as empty.
-        FileSystem(root_dir=ctx.state_dir),
+        # The workspace is this machine, working directory = the state dir.
+        # It isolates nothing by itself (it is the host filesystem); the
+        # bound is FileSystem's root_dir below.
+        LocalWorkspace(ctx.state_dir),
+        # Sandboxed to the state directory (root_dir=None = the workspace's
+        # working directory): absolute paths, `~` and `../` escapes are
+        # rejected, symlinks resolved before authorization. Rooted at
+        # `.selmakit` rather than the project because the harness walkers
+        # (list_directory/search_files/find_files) skip dot-prefixed path
+        # components unless the model names them explicitly — from the project
+        # root the whole state directory would silently list as empty.
+        FileSystem(),
         WebSearch(local="duckduckgo"),
         local_web_fetch(),
         BootstrapCapability(workspace_dir=ctx.workspace_dir),
@@ -184,9 +197,10 @@ def build_subagents_capability(ctx: GatewayContext) -> Any:
 
     def _worker_caps() -> list[Any]:
         # Fresh instances per sub-agent — the tools that make a delegate useful,
-        # under the same state-directory sandbox as the parent.
+        # under the same state-directory sandbox as the parent. No workspace of
+        # its own: SubAgents runs each delegate in the parent run's workspace.
         return [
-            FileSystem(root_dir=ctx.state_dir),
+            FileSystem(),
             WebSearch(local="duckduckgo"),
             local_web_fetch(),
         ]

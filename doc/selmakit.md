@@ -37,7 +37,7 @@ The answer is **yes** — and the result is roughly 1000 lines of framework code
 Anything that contributes to the LLM context — tools, instructions, model settings — lives in a `pydantic_ai.capabilities.AbstractCapability` subclass. The `Agent` constructor takes them as a single list:
 
 ```python
-Agent(model=…, capabilities=[FileSystem(root_dir="."), WebSearch(…), …])
+Agent(model=…, capabilities=[LocalWorkspace(".selmakit"), FileSystem(), WebSearch(…), …])
 ```
 
 Adding a new context source = writing a new capability. No threading kwargs through layers, no monkey-patching system prompts.
@@ -158,10 +158,11 @@ Composition rules: `before_*` fires in declared order, `after_*` fires in revers
 
 | Capability | Methods used | What it contributes |
 |---|---|---|
-| `FileSystem` (harness) | `get_toolset` | `read_file`/`write_file`/`edit_file`/`list_directory`/`search_files`/`find_files`/`create_directory`/`file_info`, sandboxed to `root_dir` |
+| `LocalWorkspace` (pydantic-ai) | `get_workspace` | The run's workspace; the harness capabilities below reach files only through it |
+| `FileSystem` (harness) | `get_toolset` | `read_file`/`write_file`/`edit_file`/`list_directory`/`search_files`/`find_files`/`create_directory`/`file_info`, sandboxed to `root_dir` (default: the workspace's working directory) |
 | `SqliteMemory` | `get_toolset`, `get_instructions` | `memory_search`/`memory_write` + usage hint |
 | `WorkspacePromptCapability` | dynamic `get_instructions` | Loads MD files from workspace each run |
-| `Skills` (harness) | `get_instructions` + `get_toolset` | Each `SKILL.md` as a deferred capability; body loaded on demand via `load_capability` |
+| `Skills` (harness) | `get_instructions` + `get_toolset` | Each `SKILL.md` as a deferred capability; body loaded on demand via `load_capability`; directories re-read each run |
 | `RuntimeInfoCapability` | dynamic `get_instructions` | `host / os / model / date` one-liner |
 | `BootstrapCapability` | dynamic `get_instructions` | Onboarding hint while `BOOTSTRAP.md` has content |
 | `SessionThinkingCapability` | dynamic `get_model_settings` | Reads `"thinking"` from session meta via `ctx.deps` |
@@ -304,7 +305,7 @@ selmakit was originally built against pydantic-ai 1.94.0. Migration to 2.0 (beta
 | `web_search` / `web_fetch` as plain function tools (selmakit-implemented) | `WebSearch(local="duckduckgo")` / `WebFetch(local=True)` | `NativeOrLocalTool` capability |
 | `make_system_prompt(workspace, tools, …)` registered via `@agent.system_prompt(dynamic=True)` | `WorkspacePromptCapability` + `RuntimeInfoCapability` (skills moved to the harness `Skills` capability) | dynamic `get_instructions()` |
 | `BOOTSTRAP.md` prefix appended to user message string in `_prepare_run` | `BootstrapCapability` injects a hint into instructions | dynamic `get_instructions()` |
-| `make_filesystem_tools(".")` spread into `tools=[…]` | harness `FileSystem(root_dir=".")` in `capabilities=[…]` | `get_toolset()` |
+| `make_filesystem_tools(".")` spread into `tools=[…]` | `LocalWorkspace(…)` + harness `FileSystem()` in `capabilities=[…]` | `get_toolset()` |
 | `SqliteMemory` constructed with no workspace, then late-bound via `_attach()` | `SqliteMemory` is a real capability with `workspace_dir` as constructor field | `AbstractCapability` subclass |
 | `supports_thinking` heuristic (URL sniffing for Ollama detection) | Removed; `SessionThinkingCapability` reads session meta | `get_model_settings()` callable |
 | Ollama `extra_body={"options":{"think": False}}` workaround | Removed; pydantic-ai 2.0 handles provider-specific thinking knobs | — |
@@ -396,7 +397,7 @@ selmakit/
   cli.py                — `selmakit` console command: init / gateway / dashboard
   gateway.py            — Gateway composition root + GatewayContext + default_capabilities()
   init.py               — initializes .selmakit/ structure, config, and workspace files
-  capabilities.py       — Filesystem/Workspace/Skills/Runtime/Bootstrap/SessionThinking/Mcp capabilities
+  capabilities.py       — Bootstrap/WorkspacePrompt/RuntimeInfo/SessionThinking/Heartbeat/Mcp capabilities
   commands.py           — slash-command handlers + CommandContext + SessionProxy
   config.py             — SelmaKitConfig (Pydantic) + load_config() with 120s cache
   cron.py               — agent-managed cron jobs (CronCapability/CronService/CronStore)

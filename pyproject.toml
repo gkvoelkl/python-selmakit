@@ -1,6 +1,6 @@
 [project]
 name = "selmakit"
-version = "0.1.36"
+version = "0.1.37"
 description = "Minimal multi-channel agent framework built on pydantic-ai"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -43,11 +43,15 @@ dependencies = [
     # (agent.py) precisely because small local models call a skill's name
     # instead of load_capability(id=…) — on 2.33 that budget did not reach the
     # tool it was meant for and /skill still died on the second fumble.
-    "pydantic-ai[duckduckgo,web-fetch]>=2.40.0",
+    "pydantic-ai[duckduckgo,web-fetch]>=2.54.0",
     # Core since the default capability set uses the harness FileSystem
-    # (sandboxed file tools) and Skills (deferred skill loading). Same policy as
-    # above: the floor is the tested version, the known-good minimum is 0.24.0.
-    "pydantic-ai-harness>=0.29.0",
+    # (sandboxed file tools) and Skills (deferred skill loading). Since 0.52 the
+    # harness pins pydantic-ai-slim to its exact version, so the two move in
+    # lockstep: bump both floors together. 0.52 is also the hard minimum — it
+    # moved FileSystem/Skills/SubAgents onto the run's workspace, which
+    # selmakit attaches as `LocalWorkspace(state_dir)` (gateway.py); on an
+    # older harness that capability does not exist.
+    "pydantic-ai-harness>=0.54.0",
     "python-dotenv>=1.0",
     "rich>=13.0",
     "httpx>=0.27",
