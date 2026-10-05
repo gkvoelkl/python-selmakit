@@ -163,3 +163,17 @@ def test_missing_skills_dir_does_not_fail_turns(state_dir, monkeypatch):
     gw = _gateway(state_dir, [("list_directory", {"path": "."})], monkeypatch)
     _turn(gw)
     assert _tool_outcomes(state_dir)[-1][0] == "tool-return"
+
+
+def test_relative_state_dir_with_skills(state_dir, monkeypatch):
+    # The default `state_dir=".selmakit"` is relative (#2). selmakit's own
+    # existence check resolves the skills path against the process cwd, the
+    # harness against the workspace's working directory (= the state dir) —
+    # a relative path handed over as-is means two different directories, and
+    # every run failed at its start. The fixture has chdir'ed to the parent.
+    assert Path.cwd() == state_dir.parent
+    gw = _gateway(Path(state_dir.name), [("load_capability", {"id": "demo"})], monkeypatch)
+    _turn(gw)
+    kind, tool, content = _tool_outcomes(state_dir)[-1]
+    assert (kind, tool) == ("tool-return", "load_capability")
+    assert "Say hi." in content

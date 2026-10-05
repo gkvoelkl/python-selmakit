@@ -5,6 +5,28 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.38] — 2026-10-05
+
+### Fixed
+
+- **Every run failed with a relative `state_dir` once a `skills/` folder
+  existed** ([#2](https://github.com/gkvoelkl/python-selmakit/issues/2)) —
+  which includes the default `.selmakit`, so 0.1.37 broke the common setup.
+  `build_skills_capability` checked the skills directory relative to the
+  process working directory and handed the same relative path to the harness,
+  which resolves it against the workspace's working directory, i.e. the state
+  dir: `.selmakit/.selmakit/workspace/skills`, and a `ValueError` at the start
+  of every run. The path is now made absolute once, so both sides mean one
+  directory.
+
+  It slipped past the new end-to-end tests because their fixture passed an
+  absolute state dir. `test_relative_state_dir_with_skills` runs a real turn
+  with a relative one and loads a skill; it fails with the reported error
+  without the fix. The other paths handed to pydantic-ai and the harness were
+  checked for the same pattern: `LocalWorkspace` pins a relative directory to
+  the cwd at construction, `FileSystem()` takes no path, `SubAgents` loads no
+  folders, and nothing else goes through the workspace.
+
 ## [0.1.37] — 2026-10-05
 
 ### Changed
@@ -757,6 +779,7 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
+[0.1.38]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.37...v0.1.38
 [0.1.37]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.36...v0.1.37
 [0.1.36]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.35...v0.1.36
 [0.1.35]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.34...v0.1.35

@@ -123,7 +123,11 @@ def build_skills_capability(workspace_dir: str) -> Any | None:
     therefore gets no capability at all rather than a crash per turn; creating
     the folder later needs one restart, adding skills to it does not.
     """
-    skills_dir = Path(workspace_dir) / "skills"
+    # Absolute, so both sides mean one directory: `is_dir()` resolves a
+    # relative path against the process cwd, the harness against the
+    # workspace's working directory (the state dir) — with the default
+    # relative `.selmakit` that was `.selmakit/.selmakit/workspace/skills` (#2).
+    skills_dir = Path(workspace_dir).resolve() / "skills"
     if not skills_dir.is_dir():
         return None
     return Skills(skills_dir)
