@@ -12,7 +12,7 @@ The answer is **yes**. `selmakit` is the result.
 
 ## What it is
 
-`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.54+](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
+`selmakit` is a minimal agent framework built on top of [pydantic-ai 2.57+](https://github.com/pydantic/pydantic-ai). Pydantic-AI handles the LLM loop — tool calling, streaming, type safety. `selmakit` handles everything around it.
 
 ```
 pydantic-ai  →  LLM loop
@@ -805,8 +805,8 @@ and cron — everything only some deployments need is an extra.
 
 | Package | Purpose |
 |---|---|
-| `pydantic-ai[duckduckgo,web-fetch]>=2.54.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
-| `pydantic-ai-harness>=0.54.0` | The official capability library — supplies the default `FileSystem` (sandboxed file tools) and `Skills` (deferred skill loading), plus `SubAgents` when enabled. Pins `pydantic-ai-slim` to its exact version, so the two are upgraded together |
+| `pydantic-ai[duckduckgo,web-fetch]>=2.57.0` | LLM loop, tool calling, streaming, capability framework; the `duckduckgo` and `web-fetch` extras pull in `ddgs` / `markdownify` for the local `WebSearch` / `WebFetch` fallbacks |
+| `pydantic-ai-harness>=0.57.0` | The official capability library — supplies the default `FileSystem` (sandboxed file tools) and `Skills` (deferred skill loading), plus `SubAgents` when enabled. Pins `pydantic-ai-slim` to its exact version, so the two are upgraded together |
 | `fastapi` + `uvicorn` | WebChat HTTP/SSE server |
 | `httpx` | Async HTTP client |
 | `python-dotenv` | `.env` loading |
