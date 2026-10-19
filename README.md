@@ -303,11 +303,12 @@ The `model.model` string is a `"provider/model"` pair. `config.build_model()` �
 | `model.model` | Backend | Credentials / endpoint |
 |---|---|---|
 | `ollama/llama3.2` *(default)* | Local Ollama via its OpenAI-compatible endpoint | `model.base_url` (default `http://localhost:11434/v1`); no API key |
+| `local/gemma4` | Any other local OpenAI-compatible server — llama.cpp, vLLM, LM Studio | `model.base_url` (e.g. `http://localhost:9931/v1`); no API key |
 | `openai/gpt-5` | OpenAI | `OPENAI_API_KEY` (optional `OPENAI_BASE_URL`) |
 | `anthropic/claude-sonnet-4-6` · `anthropic/claude-opus-4-8` | Anthropic (Claude) | `ANTHROPIC_API_KEY` |
 | `google/gemini-2.5-pro` · `gemini/gemini-2.5-flash` | Google (Gemini) | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 
-A bare model string with no `provider/` prefix defaults to `ollama`. Only the `ollama` branch reads `model.base_url` — the hosted providers pick up their endpoints and keys from the environment (put them in `.env`). Ollama stays the primary, local-first path; the hosted providers are there when you want more capability or a cloud fallback. The `anthropic` and `google-genai` SDKs ship with the full `pydantic-ai` dependency, so no extra install is needed. An unknown provider raises a `ValueError` at startup.
+A bare model string with no `provider/` prefix defaults to `ollama`. Only the `ollama` and `local` branches read `model.base_url` — the hosted providers pick up their endpoints and keys from the environment (put them in `.env`). `local/` exists alongside `ollama/` because the two servers return a model's thinking in different fields (`reasoning` vs. `reasoning_content`); with the wrong one the thinking is sent back as `<think>` text, which can derail a model's tool calls entirely. It is a separate prefix rather than `openai/` with a `base_url`, so switching to a hosted OpenAI model never goes to the local server by accident. Ollama stays the primary, local-first path; the hosted providers are there when you want more capability or a cloud fallback. The `anthropic` and `google-genai` SDKs ship with the full `pydantic-ai` dependency, so no extra install is needed. An unknown provider raises a `ValueError` at startup.
 
 ---
 

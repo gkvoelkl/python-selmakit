@@ -5,6 +5,46 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.40] — 2026-10-19
+
+### Added
+
+- **`local/` model provider for local OpenAI-compatible servers** — llama.cpp,
+  vLLM, LM Studio
+  ([#3](https://github.com/gkvoelkl/python-selmakit/issues/3)). `local/gemma4`
+  with `model.base_url` pointing at the server is now a config-only switch; no
+  `OPENAI_BASE_URL` and no dummy `OPENAI_API_KEY` in the environment.
+  `/model local/<name>` checks the model against the server's `/v1/models` like
+  `ollama/` does.
+
+  The profile is Ollama's (per-family detection, no strict tool definitions)
+  with the thinking field pinned to `reasoning_content`, sent back as a field.
+  Pointing `ollama/` at llama.cpp failed every run: Ollama's profile expects the
+  thinking in `reasoning`, llama.cpp returns it in `reasoning_content`, so it
+  went back to the model as `<think>` text in the content — Gemma imitated
+  that until its tool calls landed inside the reasoning and three empty
+  responses exhausted the output retries. `openai/` happened to work through
+  pydantic-ai's auto-detection; `local/` makes the round-trip deterministic.
+  `tests/test_build_model.py` pins it against a mocked llama.cpp, and fails with
+  the Ollama profile.
+
+  A separate prefix rather than forwarding `base_url` from `openai/`, as the
+  issue proposed: `selmakit init` writes the Ollama default `base_url` into
+  every config, so an explicitly set one cannot be detected, and the field is
+  shared — a dashboard switch to `openai/gpt-5` would have gone to the local
+  server. `openai/` is unchanged.
+
+## [0.1.39] — 2026-10-19
+
+### Changed
+
+- **Upgraded to pydantic-ai 2.57 / pydantic-ai-harness 0.57** (floors raised
+  together, the harness pins `pydantic-ai-slim` exactly). The 2.55–2.57
+  compatibility notes contain nothing selmakit depends on; the one change
+  touching the default capability set — `Skills` honours the
+  `disable-model-invocation` and `user-invocable` frontmatter keys — is inert,
+  no shipped skill sets either.
+
 ## [0.1.38] — 2026-10-05
 
 ### Fixed
@@ -779,6 +819,8 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
+[0.1.40]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.39...v0.1.40
+[0.1.39]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.38...v0.1.39
 [0.1.38]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.37...v0.1.38
 [0.1.37]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.36...v0.1.37
 [0.1.36]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.35...v0.1.36

@@ -100,8 +100,8 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
         """Show or set the active model for this session.
 
         Validates the target before setting it: the provider prefix must be one
-        build_model() knows, and for ``ollama/…`` the model must actually be
-        installed at the configured endpoint (checked live, skipped if the
+        build_model() knows, and for ``ollama/…`` / ``local/…`` the model must
+        actually be served at the configured endpoint (checked live, skipped if the
         endpoint is unreachable so an offline check never blocks a switch).
         """
         override = ctx.session.get("model_override")
@@ -115,14 +115,14 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
             provider, model_name = "ollama", provider
         provider = provider.lower()
 
-        known = {"ollama", "openai", "anthropic", "google", "gemini", "google-gla"}
+        known = {"ollama", "local", "openai", "anthropic", "google", "gemini", "google-gla"}
         if provider not in known:
             return (
                 f"Unknown provider `{provider}`. "
-                "Use one of: ollama, openai, anthropic, google/gemini."
+                "Use one of: ollama, local, openai, anthropic, google/gemini."
             )
 
-        if provider == "ollama":
+        if provider in ("ollama", "local"):
             url = f"{config.model.effective_base_url.rstrip('/')}/models"
             try:
                 # httpx, not urllib: command handlers are awaited on the gateway's
@@ -137,7 +137,8 @@ def make_commands(config: "SelmaKitConfig", cron_store: Any = None) -> dict[str,
                 installed = None  # endpoint unreachable → don't block the switch
             if installed is not None and model_name not in installed:
                 avail = ", ".join(f"`{m}`" for m in sorted(installed)) or "(none installed)"
-                return f"Ollama model `{model_name}` not found at the endpoint.\nInstalled: {avail}"
+                label = "Ollama model" if provider == "ollama" else "Model"
+                return f"{label} `{model_name}` not found at the endpoint.\nInstalled: {avail}"
 
         ctx.session.set("model_override", target)
         return f"Model set to: {target}"

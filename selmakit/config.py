@@ -206,6 +206,9 @@ def build_model(cfg: ModelConfig):
 
       - ``ollama/…``               → OpenAI-compatible endpoint at ``effective_base_url``
                                      (default; local, verified tool-caller)
+      - ``local/…``                → any other local OpenAI-compatible server
+                                     (llama.cpp, vLLM, LM Studio) at
+                                     ``effective_base_url``; no key required
       - ``openai/…``               → OpenAI API (key from ``OPENAI_API_KEY``,
                                      endpoint override via ``OPENAI_BASE_URL``)
       - ``anthropic/…``            → Anthropic API (key from ``ANTHROPIC_API_KEY``)
@@ -213,7 +216,7 @@ def build_model(cfg: ModelConfig):
                                      ``GOOGLE_API_KEY``)
 
     A bare model string with no ``provider/`` prefix defaults to ``ollama``.
-    Only the ``ollama`` branch uses ``cfg.base_url`` — the hosted providers read
+    Only the ``ollama`` and ``local`` branches use ``cfg.base_url`` — the hosted providers read
     their endpoint from the environment. For credentials they prefer
     ``cfg.api_key`` (set via the dashboard's model selector) and otherwise fall
     back to the provider's env var (``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` /
@@ -228,6 +231,35 @@ def build_model(cfg: ModelConfig):
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.ollama import OllamaProvider
         return OpenAIChatModel(model_name, provider=OllamaProvider(base_url=cfg.effective_base_url))
+
+    if provider == "local":
+        # A separate prefix rather than `openai/` + base_url: `selmakit init`
+        # writes the Ollama default into every selmakit.json, so an "explicitly
+        # set" base_url cannot be told apart, and forwarding it would send a
+        # dashboard switch to `openai/gpt-5` to the local server instead.
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.profiles import merge_profile
+        from pydantic_ai.profiles.openai import OpenAIModelProfile
+        from pydantic_ai.providers.ollama import OllamaProvider
+        from pydantic_ai.providers.openai import OpenAIProvider
+        # Ollama's profile is the generic one for a local OpenAI-compatible
+        # server (per-family detection, no strict tools), except for its thinking
+        # field: Ollama sends `reasoning`, llama.cpp/vLLM `reasoning_content`.
+        # With the wrong field the thinking goes back as <think> text in the
+        # content, and Gemma imitates that until its tool calls land inside the
+        # reasoning and every response comes back empty (issue #3). Pinned
+        # rather than auto-detected so the round-trip is deterministic.
+        profile = merge_profile(
+            OllamaProvider.model_profile(model_name),
+            OpenAIModelProfile(
+                openai_chat_thinking_field="reasoning_content",
+                openai_chat_send_back_thinking_parts="field",
+            ),
+        )
+        # A local server does not check the key, but the OpenAI client refuses
+        # to start without one — a placeholder keeps OPENAI_API_KEY out of it.
+        provider_obj = OpenAIProvider(base_url=cfg.effective_base_url, api_key=cfg.api_key or "local")
+        return OpenAIChatModel(model_name, provider=provider_obj, profile=profile)
 
     if provider == "openai":
         from pydantic_ai.models.openai import OpenAIChatModel
@@ -251,7 +283,7 @@ def build_model(cfg: ModelConfig):
 
     raise ValueError(
         f"Unknown model provider {provider!r} in {cfg.model!r}. "
-        "Use one of: ollama, openai, anthropic, google/gemini."
+        "Use one of: ollama, local, openai, anthropic, google/gemini."
     )
 
 
