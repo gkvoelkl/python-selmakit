@@ -356,6 +356,10 @@ GET /webchat/heartbeat/poll  →  {"alert": "..."} or {"alert": null}
 
 The dashboard polls this endpoint to surface proactive turns from the heartbeat scheduler.
 
+### Chat input history
+
+`st.chat_input` keeps no history, so the dashboard adds shell-style recall: ↑ steps back through the prompts typed in this browser session, ↓ forward (past the newest it restores the unsent draft), Enter sends as usual. The list is `st.session_state.input_history` (typed prompts only — the approval buttons' `/approve`/`/deny` are not recalled; no consecutive duplicates; newest 100). It reaches the page through `st.html(..., unsafe_allow_javascript=True)` (hence `streamlit>=1.52`), which binds one capture-phase key listener to the document; ↑ acts only with the caret on the first line and ↓ only on the last, so multi-line prompts stay editable. A browser reload starts a new session and with it an empty history.
+
 ---
 
 ## State Directory Layout
