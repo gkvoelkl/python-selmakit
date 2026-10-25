@@ -44,7 +44,7 @@ Released versions and what changed in each are listed in the
 | Skills | `SKILL.md` files — loaded on demand as *deferred capabilities* via harness `Skills`; only name + description sit in the prompt, the body arrives through `load_capability` |
 | Filesystem tools | harness `FileSystem()` over `LocalWorkspace(<state_dir>)` — `read_file`/`write_file`/`edit_file`/`list_directory`/`search_files`/`find_files`/`create_directory`/`file_info`, sandboxed to `.selmakit/` (traversal rejected, symlinks resolved before authorization) |
 | Web search & fetch | `WebSearch(local="duckduckgo")`, `WebFetch(local=True)` — native on supporting providers, local fallback otherwise |
-| External MCP servers | `McpCapability` — stdio/HTTP servers from `selmakit.json` (standard `mcpServers` shape), per-server `prefix`/`allow_tools`/`require_approval`; connections held open for the gateway's lifetime |
+| External MCP servers | `McpCapability` — stdio/HTTP servers from `selmakit.json` (standard `mcpServers` shape), per-server `prefix`/`allow_tools`/`require_approval`; connections held open for the gateway's lifetime; a server that fails to connect is skipped with a warning |
 | Tool approval | Gated MCP tools defer instead of executing; approve/deny via `/approve` `/deny` or the dashboard's ✅/🚫 buttons; auto-denied in unattended (heartbeat/cron) runs |
 | Sub-agent delegation | `SubAgents` (from [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness)) — `delegate_task` hands self-contained work to named, isolated sub-agents |
 | Dynamic prompt sections | `WorkspacePromptCapability`, `RuntimeInfoCapability`, `BootstrapCapability` |
@@ -141,6 +141,7 @@ cp .env.example .env
 # Edit .selmakit/workspace/IDENTITY.md and USER.md
 
 # Start gateway + Streamlit dashboard
+# (start.sh waits for the gateway; if it dies on startup, it prints gateway.log)
 ./start.sh        # Linux / macOS
 start.bat         # Windows
 ```
@@ -292,7 +293,7 @@ The `subagents` section (optional; the harness it needs is a core dependency) en
 
 `subagents.models` is an optional **routing menu**: named model options the parent can send an individual delegation to. Each key maps to a `model` (the same `provider/model` syntax as the main model, built through `build_model()` so it inherits the configured credentials/`base_url`), a `description` (the routing hint listed in the system prompt), and an optional `thinking` level applied to that option's runs. With a menu configured, `delegate_task` gains a `model` argument constrained to the menu keys, so the agent routes on task difficulty — name the keys for the job (`fast`, `deep`), not for the vendor. A sub-agent's own `models` list restricts which keys it accepts (`"models": ["deep"]` pins the `coder` above to the deep option); omit it to allow the whole menu. Leave `models` out entirely and nothing changes — `delegate_task` keeps its old two-argument shape and every delegation runs on the sub-agent's own model.
 
-The `mcp` section attaches external [MCP](https://modelcontextprotocol.io) servers as tools (`McpCapability`, added to the default set when `mcp.enabled` and at least one server is configured). Each entry uses the standard `mcpServers` fields — stdio (`command`/`args`/`env`/`cwd`) or HTTP (`url`/`headers`) — plus selmakit extras: `enabled`, `prefix` (namespace the tool names), `allow_tools` (whitelist), and `require_approval` (gate every call behind human approval — the run defers and you resolve it with `/approve`/`/deny` or the dashboard buttons; unattended heartbeat/cron runs auto-deny). `${VAR}` in `env`/`headers` is expanded from the environment. `examples/weather_mcp.py` is a self-contained reference server (Open-Meteo, no API key). Manage servers at runtime with `/mcp`.
+The `mcp` section attaches external [MCP](https://modelcontextprotocol.io) servers as tools (`McpCapability`, added to the default set when `mcp.enabled` and at least one server is configured). Each entry uses the standard `mcpServers` fields — stdio (`command`/`args`/`env`/`cwd`) or HTTP (`url`/`headers`) — plus selmakit extras: `enabled`, `prefix` (namespace the tool names), `allow_tools` (whitelist), and `require_approval` (gate every call behind human approval — the run defers and you resolve it with `/approve`/`/deny` or the dashboard buttons; unattended heartbeat/cron runs auto-deny). `${VAR}` in `env`/`headers` is expanded from the environment. `examples/weather_mcp.py` is a self-contained reference server (Open-Meteo, no API key). Manage servers at runtime with `/mcp`. A server that fails to connect at startup is logged and skipped — the gateway runs on without its tools.
 
 Thinking effort is per session, not per agent. Use `/think low|medium|high|off` in a chat — the value lands in `.meta.json` and `SessionThinkingCapability` reads it from there on each run. The value flows into pydantic-ai's unified `thinking` model setting; on providers without thinking support it is harmless (ignored).
 

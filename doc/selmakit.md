@@ -260,6 +260,8 @@ The limit of that promise: `run_messages` cannot make it. The nested calls are p
 
 The underlying `fastmcp` client ships with pydantic-ai's mcp extra (no extra install). Connections are held open for the gateway's lifetime: `Gateway.serve()` wraps its `asyncio.gather` in `async with self.agent:`, and `Agent.__aenter__`/`__aexit__` delegate to the pydantic-ai agent context, which starts all `MCPToolset`s once. Entering is a no-op if already entered, so per-run streaming calls are unaffected; a standalone `agent.run(...)` outside the context still auto-connects per run.
 
+A server that fails to connect does not take the gateway down: each `MCPToolset` is wrapped in `_OptionalMcpServer`, which logs `MCP server '<name>' failed to connect — continuing without its tools` and offers no tools for that server until the next restart. Only the outermost enter reaches the wrapped toolset, so a dead server is not retried on every turn.
+
 Runtime management is via the `/mcp` command: list servers with their state, or `/mcp enable|disable <name>` to patch `selmakit.json`. Because toolsets are built once at startup, a toggle takes effect on the next gateway restart (the reply says so).
 
 ### Tool approval (deferred tools)

@@ -5,6 +5,60 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-10-25
+
+A minor rather than a patch bump: the dashboard now needs `streamlit>=1.52`,
+a failing MCP server changes from fatal to skipped, and installs are pinned by
+a committed `uv.lock`. Earlier 0.1.x releases also carried breaking changes
+under patch bumps (0.1.26, 0.1.33); from here on a break means a minor bump.
+
+### Added
+
+- **↑/↓ recall earlier prompts in the dashboard chat input.** `st.chat_input`
+  keeps no history; typed prompts are now collected in
+  `st.session_state.input_history` (no consecutive duplicates, newest 100, the
+  approval buttons' `/approve`/`/deny` excluded) and a small script steps
+  through them shell-style. Past the newest the unsent draft comes back; Enter
+  sends as usual. ↑ acts only with the caret on the first line and ↓ only on
+  the last, so multi-line prompts stay editable. A browser reload starts a new
+  session and an empty history. Requires `streamlit>=1.52`
+  (`st.html(..., unsafe_allow_javascript=True)`).
+
+### Changed
+
+- **A failing MCP server no longer takes the gateway down.** `Gateway.serve()`
+  connects every MCP server once at startup; one server exiting on startup
+  raised out of `serve()` and stopped WebChat, heartbeat and cron with it.
+  Each server is now wrapped in `_OptionalMcpServer`: a failed connect logs
+  `MCP server '<name>' failed to connect — continuing without its tools` and
+  that server offers no tools until the next restart. A dead server is not
+  retried on every turn.
+- **`start.sh` waits for the gateway.** Up to 60 s for the web chat port (read
+  from `selmakit.json`); if the gateway exits first, the last 20 lines of
+  `gateway.log` are printed and the dashboard is not started. Before, a crash
+  only surfaced as "Gateway unreachable" in the dashboard.
+- **`uv.lock` is committed.** It was gitignored, so every fresh install
+  resolved the newest dependencies — that is how pydantic-ai 2.61 arrived
+  unannounced. Upgrades are now deliberate: `uv lock --upgrade`, run the
+  tests, commit the lock. The lock pins pydantic-ai 2.57 / harness 0.57.
+
+### Fixed
+
+- **`examples/weather_mcp.py` on mcp 2.x.** mcp 2.x renamed
+  `mcp.server.fastmcp.FastMCP` to `mcp.server.mcpserver.MCPServer`; the
+  reference server exited on import and — before the change above — took the
+  gateway with it.
+- **`/systemprompt` on pydantic-ai 2.61.** 2.61 keeps a request's
+  `instructions` byte-identical across a conversation (the cached prefix) and
+  sends later changes, such as a skill added to the deferred catalog, as
+  `instruction-delta` parts. `last_system_prompt` read only `instructions` and
+  showed the stale catalog; the latest delta per block is now appended under
+  `## Updated during this conversation`. No change on 2.57.
+- **`test_file_tools_stay_inside_the_state_dir` on harness 0.61**, which
+  refuses an escaping path with an "outside the project root" tool result
+  instead of a retry prompt. The sandbox was intact; the test accepts both
+  forms and keeps the no-leak assertion.
+
 ## [0.1.40] — 2026-10-19
 
 ### Added
@@ -819,6 +873,7 @@ First release published to PyPI: `pip install selmakit`.
 
 Versions before 0.1.23 were never published to PyPI and are not listed here.
 
+[0.2.0]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.40...v0.2.0
 [0.1.40]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.39...v0.1.40
 [0.1.39]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.38...v0.1.39
 [0.1.38]: https://github.com/gkvoelkl/python-selmakit/compare/v0.1.37...v0.1.38

@@ -99,7 +99,12 @@ prompt inspectable without re-rendering it:
 
 1. After each **user-facing** turn (`run_stream` / `run_stream_events`),
    `Agent._extract_instructions()` pulls the `instructions` string from the
-   in-memory run result (the latest request that carries one).
+   in-memory run result (the latest request that carries one). Since
+   pydantic-ai 2.61 that string stays byte-identical across a conversation
+   (it is the cached prompt prefix) and later changes — a skill added to the
+   deferred catalog, say — arrive as `instruction-delta` parts instead; the
+   latest delta per block is appended under `## Updated during this
+   conversation`, so the cached value still matches what the model got.
 2. It is cached via `set_meta(session_key, "last_system_prompt", …)`.
 
 Retrieve it:
