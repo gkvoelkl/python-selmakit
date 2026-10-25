@@ -52,7 +52,7 @@ Released versions and what changed in each are listed in the
 | Live model switching | Per-session `model_override` via `/model` or the dashboard selector — takes effect next turn, no restart |
 | Verbose mode | `/verbose on` streams tool calls/results/timing and reasoning deltas into a collapsible dashboard panel |
 | OpenTelemetry tracing | Opt-in via `tracing.enabled`; Logfire SDK as a local OTel client (`send_to_logfire=False`) exporting OTLP/HTTP to any collector |
-| Streamlit dashboard | `selmakit.dashboard.run(title=, image=, input_placeholder=)` — brandable SSE chat + heartbeat alerts |
+| Streamlit dashboard | `selmakit.dashboard.run(title=, image=, input_placeholder=)` — brandable SSE chat + heartbeat alerts; ↑/↓ in the chat input recalls earlier prompts, Enter re-sends |
 | Reusable runtime | `Gateway.from_config(extra_capabilities=[...]).run()` — backend in one line |
 | Config | `selmakit.json` with 120s cache |
 

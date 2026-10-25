@@ -324,6 +324,81 @@ def render_approval(pending: List[dict]) -> None:
         st.rerun()
 
 
+# Most recent typed prompts recalled with ↑/↓ in the chat input.
+_INPUT_HISTORY_LIMIT = 100
+
+# Shell-style recall for st.chat_input, which has no history of its own. The
+# listener is attached once to the document (capture phase, so it sees the key
+# before the textarea does) and survives the textarea being re-mounted; a rerun
+# only swaps the list in window.__skHistory. ↑ acts only with the caret on the
+# first line and ↓ only on the last, so multi-line prompts stay editable; the
+# value goes in through the native setter plus an input event, because the
+# textarea is React-controlled and a plain assignment is reverted on the next
+# render. Enter submits as usual — recalling and sending is ↑ then Enter.
+_INPUT_HISTORY_JS = """
+<script>
+(() => {
+  const w = window;
+  w.__skHistory = __HISTORY__;
+  w.__skHistoryPos = w.__skHistory.length;
+  w.__skHistoryDraft = "";
+  if (w.__skHistoryBound) return;
+  w.__skHistoryBound = true;
+  const SELECTOR = 'textarea[data-testid="stChatInputTextArea"]';
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+  let recalling = false;
+  const show = (ta, text) => {
+    recalling = true;
+    setter.call(ta, text);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    recalling = false;
+    ta.setSelectionRange(text.length, text.length);
+  };
+  document.addEventListener("input", (e) => {
+    // Typing turns the recalled entry into a fresh draft.
+    if (!recalling && e.target.matches && e.target.matches(SELECTOR)) {
+      w.__skHistoryPos = w.__skHistory.length;
+    }
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    const ta = e.target;
+    if (!ta.matches || !ta.matches(SELECTOR)) return;
+    if (e.isComposing || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (ta.selectionStart !== ta.selectionEnd) return;
+    const hist = w.__skHistory;
+    const caret = ta.selectionStart;
+    if (e.key === "ArrowUp") {
+      if (ta.value.lastIndexOf("\\n", caret - 1) !== -1 || w.__skHistoryPos === 0) return;
+      if (w.__skHistoryPos === hist.length) w.__skHistoryDraft = ta.value;
+      w.__skHistoryPos -= 1;
+      e.preventDefault();
+      show(ta, hist[w.__skHistoryPos]);
+    } else if (e.key === "ArrowDown") {
+      if (ta.value.indexOf("\\n", caret) !== -1 || w.__skHistoryPos >= hist.length) return;
+      w.__skHistoryPos += 1;
+      e.preventDefault();
+      show(ta, w.__skHistoryPos === hist.length ? w.__skHistoryDraft : hist[w.__skHistoryPos]);
+    }
+  }, true);
+})();
+</script>
+"""
+
+
+def remember_input(history: List[str], prompt: str) -> None:
+    """Append a typed prompt to the recall list: no consecutive duplicates, capped."""
+    if not prompt.strip() or (history and history[-1] == prompt):
+        return
+    history.append(prompt)
+    del history[:-_INPUT_HISTORY_LIMIT]
+
+
+def input_history_script(history: Sequence[str]) -> str:
+    # "</" would let a prompt like "</script>" end the tag early.
+    data = json.dumps(list(history)).replace("</", "<\\/")
+    return _INPUT_HISTORY_JS.replace("__HISTORY__", data)
+
+
 def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
     """Render the dashboard. Either pass a ``DashboardConfig`` or keyword
     overrides (e.g. ``run(title=..., image=..., input_placeholder=...)``)."""
@@ -360,6 +435,9 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
+
+    if "input_history" not in st.session_state:
+        st.session_state.input_history = []
 
     # -- Settings Dialog
     @st.dialog("⚙️ Settings", width="large")
@@ -525,6 +603,10 @@ def run(config: DashboardConfig | None = None, **overrides: Any) -> None:
     # over freshly typed input; both drive an identical streamed turn.
     typed_prompt = st.chat_input(cfg.input_placeholder)
     prompt = st.session_state.pop("pending_prompt", None) or typed_prompt
+    # Only what was typed is recalled with ↑ — not the approval buttons' commands.
+    if typed_prompt and prompt == typed_prompt:
+        remember_input(st.session_state.input_history, typed_prompt)
+    st.html(input_history_script(st.session_state.input_history), unsafe_allow_javascript=True)
     if prompt:
         display = {"/approve": "✅ Freigegeben", "/deny": "🚫 Abgelehnt"}.get(prompt, prompt)
         st.session_state.messages.append({"role": "user", "content": display})

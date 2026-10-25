@@ -62,7 +62,7 @@ dependencies = [
 [project.optional-dependencies]
 # Streamlit dashboard (selmakit.dashboard / `selmakit dashboard`).
 dashboard = [
-    "streamlit>=1.0",
+    "streamlit>=1.52",
 ]
 # Telegram channel (channels.telegram.enabled in selmakit.json).
 telegram = [
