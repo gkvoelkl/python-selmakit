@@ -16,7 +16,8 @@ from typing import Any
 
 from pydantic_ai import ModelSettings, RunContext
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.toolsets import AgentToolset, FunctionToolset
+from pydantic_ai.toolsets import AgentToolset, FunctionToolset, WrapperToolset
+from pydantic_ai.toolsets.abstract import ToolsetTool
 
 from selmakit.session import JsonlStore
 from selmakit.workspace import detect_bootstrap, load_workspace_files
@@ -206,6 +207,53 @@ def _expand_env(mapping: dict[str, str]) -> dict[str, str]:
 
 
 @dataclass
+class _OptionalMcpServer(WrapperToolset[Any]):
+    """One MCP server whose failure to connect costs its tools, not the gateway.
+
+    ``Gateway.serve()`` enters the agent context once, which connects every MCP
+    server; without this guard one server that exits on startup (a broken
+    install, a missing binary) raises out of ``serve()`` and takes WebChat,
+    heartbeat and cron down with it. A failed connect is logged and the server
+    contributes no tools until the outermost context is entered again — under
+    the gateway that is the next restart, which is also when ``/mcp enable``
+    takes effect. Only the outermost enter/exit reaches the wrapped toolset, so
+    per-run enters nested inside the gateway's do not retry a dead server on
+    every turn.
+    """
+
+    name: str = ""
+    _depth: int = field(default=0, init=False, repr=False)
+    _failed: bool = field(default=False, init=False, repr=False)
+
+    async def __aenter__(self) -> _OptionalMcpServer:
+        self._depth += 1
+        if self._depth == 1:
+            try:
+                await self.wrapped.__aenter__()
+            except Exception as e:
+                self._failed = True
+                logger.warning(
+                    "MCP server %r failed to connect — continuing without its tools: %s",
+                    self.name, e,
+                )
+        return self
+
+    async def __aexit__(self, *args: Any) -> bool | None:
+        self._depth -= 1
+        if self._depth > 0:
+            return None
+        if self._failed:
+            self._failed = False
+            return None
+        return await self.wrapped.__aexit__(*args)
+
+    async def get_tools(self, ctx: RunContext[Any]) -> dict[str, ToolsetTool[Any]]:
+        if self._failed:
+            return {}
+        return await self.wrapped.get_tools(ctx)
+
+
+@dataclass
 class McpCapability(AbstractCapability[Any]):
     """Attach external MCP servers as tools.
 
@@ -215,9 +263,10 @@ class McpCapability(AbstractCapability[Any]):
     optional per-server ``prefix`` namespaces its tool names and ``allow_tools``
     whitelists them. All servers are merged into one ``CombinedToolset``.
 
-    The toolset is built once at construction. pydantic-ai opens/closes the
-    underlying connection around each run; keeping it open across runs (entering
-    the agent context once at startup) is a later optimization.
+    The toolset is built once at construction; the gateway connects it once at
+    startup by entering the agent context. Each server is wrapped in
+    ``_OptionalMcpServer``, so one that fails to connect is logged and skipped
+    instead of aborting the gateway.
     """
 
     servers: dict[str, Any]  # name -> McpServerConfig
@@ -256,7 +305,7 @@ class McpCapability(AbstractCapability[Any]):
                 logger.warning("MCP server %r has neither command nor url — skipping", name)
                 continue
 
-            ts: Any = MCPToolset(Client(transport))
+            ts: Any = _OptionalMcpServer(MCPToolset(Client(transport)), name=name)
             if s.allow_tools is not None:
                 allow = set(s.allow_tools)
                 ts = ts.filtered(lambda ctx, td, _a=allow: td.name in _a)
