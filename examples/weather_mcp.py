@@ -19,9 +19,9 @@ Run standalone for a quick smoke test:
 from __future__ import annotations
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
-mcp = FastMCP("weather")
+mcp = MCPServer("weather")
 
 _GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST = "https://api.open-meteo.com/v1/forecast"
