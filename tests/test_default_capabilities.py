@@ -129,7 +129,11 @@ def test_file_tools_stay_inside_the_state_dir(state_dir, monkeypatch):
                               ("read_file", {"path": str(secret)})], monkeypatch)
     _turn(gw)
     outcomes = _tool_outcomes(state_dir)
-    assert [kind for kind, _, _ in outcomes] == ["retry-prompt", "retry-prompt"]
+    # Refused either way: harness < 0.61 raises a retry prompt, 0.61 returns
+    # an "outside the project root" notice as the tool result.
+    assert len(outcomes) == 2
+    assert all(kind == "retry-prompt" or "outside the project root" in content
+               for kind, _, content in outcomes)
     assert all("TOP-SECRET" not in content for _, _, content in outcomes)
 
 

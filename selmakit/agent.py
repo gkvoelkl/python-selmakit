@@ -259,12 +259,39 @@ class Agent:
 
     @staticmethod
     def _extract_instructions(messages: list) -> str | None:
-        """Pull the rendered instructions string from the latest request that has one."""
-        for m in reversed(messages):
-            instr = getattr(m, "instructions", None)
-            if instr:
-                return instr
-        return None
+        """The instructions in force for the latest request.
+
+        Since pydantic-ai 2.61 a request's ``instructions`` stay byte-identical
+        across a conversation (they are the cached prefix), and a block that
+        changes later — a skill added to the deferred catalog, say — reaches the
+        model as an ``instruction-delta`` part instead. Reading ``instructions``
+        alone would hide every such change from ``/systemprompt``, so the latest
+        delta per block since those instructions were first sent is appended.
+        The joined string carries no block ids, so a delta cannot be spliced in
+        place; it supersedes the matching block above it.
+        """
+        requests = [m for m in messages if getattr(m, "kind", None) == "request"]
+        base: str | None = None
+        start = len(requests)
+        for i in range(len(requests) - 1, -1, -1):
+            instr = getattr(requests[i], "instructions", None)
+            if not instr:
+                continue
+            if base is not None and instr != base:
+                break
+            base, start = instr, i
+        if base is None:
+            return None
+        deltas: dict[str, str | None] = {}
+        for request in requests[start:]:
+            for part in request.parts:
+                if getattr(part, "part_kind", None) == "instruction-delta":
+                    deltas.pop(str(part.id), None)  # re-insert: latest change last
+                    deltas[str(part.id)] = part.content
+        updates = [content for content in deltas.values() if content]
+        if not updates:
+            return base
+        return "\n\n".join([base, "## Updated during this conversation", *updates])
 
     # ------------------------------------------------------------------ tools
 
